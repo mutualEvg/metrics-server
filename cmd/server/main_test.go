@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/go-chi/chi/v5"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -8,7 +9,8 @@ import (
 
 func TestUpdateHandler(t *testing.T) {
 	storage := NewMemStorage()
-	handler := updateHandler(storage)
+	router := chi.NewRouter()
+	router.Post("/update/{type}/{name}/{value}", updateHandler(storage))
 
 	tests := []struct {
 		name       string
@@ -49,8 +51,8 @@ func TestUpdateHandler(t *testing.T) {
 		{
 			name:       "Wrong Method",
 			method:     http.MethodGet,
-			url:        "/update/gauge/testGauge/123",
-			wantStatus: http.StatusMethodNotAllowed,
+			url:        "/update/gauge/testGauge/123.45",
+			wantStatus: http.StatusMethodNotAllowed, // router returns 405
 		},
 	}
 
@@ -59,7 +61,7 @@ func TestUpdateHandler(t *testing.T) {
 			req := httptest.NewRequest(tt.method, tt.url, nil)
 			rec := httptest.NewRecorder()
 
-			handler(rec, req)
+			router.ServeHTTP(rec, req)
 
 			res := rec.Result()
 			defer res.Body.Close()

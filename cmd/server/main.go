@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/go-chi/chi/v5"
 	"log"
 	"net/http"
 	"strconv"
@@ -9,20 +10,19 @@ import (
 	"sync"
 )
 
-// Types of metrics
+// --- Metric Types ---
 const (
 	GaugeType   = "gauge"
 	CounterType = "counter"
 )
 
-// MemStorage holds the metrics
+// --- Metric Storage ---
 type MemStorage struct {
 	gauges   map[string]float64
 	counters map[string]int64
 	mu       sync.RWMutex
 }
 
-// NewMemStorage initializes a new storage
 func NewMemStorage() *MemStorage {
 	return &MemStorage{
 		gauges:   make(map[string]float64),
@@ -30,30 +30,51 @@ func NewMemStorage() *MemStorage {
 	}
 }
 
-// UpdateGauge updates or sets a gauge metric
 func (ms *MemStorage) UpdateGauge(name string, value float64) {
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
 	ms.gauges[name] = value
 }
 
-// UpdateCounter updates or adds to a counter metric
 func (ms *MemStorage) UpdateCounter(name string, value int64) {
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
 	ms.counters[name] += value
 }
 
-// Handler for POST /update/{type}/{name}/{value}
+func (ms *MemStorage) GetGauge(name string) (float64, bool) {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	val, ok := ms.gauges[name]
+	return val, ok
+}
+
+func (ms *MemStorage) GetCounter(name string) (int64, bool) {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	val, ok := ms.counters[name]
+	return val, ok
+}
+
+func (ms *MemStorage) GetAll() (map[string]float64, map[string]int64) {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	gCopy := make(map[string]float64)
+	cCopy := make(map[string]int64)
+	for k, v := range ms.gauges {
+		gCopy[k] = v
+	}
+	for k, v := range ms.counters {
+		cCopy[k] = v
+	}
+	return gCopy, cCopy
+}
+
+// --- Handlers ---
+
 func updateHandler(storage *MemStorage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		path := strings.TrimPrefix(r.URL.Path, "/update/")
-		parts := strings.Split(path, "/")
+		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/update/"), "/")
 		if len(parts) != 3 {
 			http.Error(w, "Invalid URL format", http.StatusNotFound)
 			return
@@ -62,11 +83,6 @@ func updateHandler(storage *MemStorage) http.HandlerFunc {
 		metricType := parts[0]
 		metricName := parts[1]
 		metricValue := parts[2]
-
-		if metricName == "" {
-			http.Error(w, "Metric name is required", http.StatusNotFound)
-			return
-		}
 
 		switch metricType {
 		case GaugeType:
@@ -86,7 +102,7 @@ func updateHandler(storage *MemStorage) http.HandlerFunc {
 			storage.UpdateCounter(metricName, val)
 
 		default:
-			http.Error(w, "Invalid metric type", http.StatusBadRequest)
+			http.Error(w, "Unknown metric type", http.StatusBadRequest)
 			return
 		}
 
@@ -95,14 +111,54 @@ func updateHandler(storage *MemStorage) http.HandlerFunc {
 	}
 }
 
+func getValueHandler(storage *MemStorage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		metricType := chi.URLParam(r, "type")
+		name := chi.URLParam(r, "name")
+
+		switch metricType {
+		case GaugeType:
+			if val, ok := storage.GetGauge(name); ok {
+				fmt.Fprintf(w, "%f", val)
+				return
+			}
+		case CounterType:
+			if val, ok := storage.GetCounter(name); ok {
+				fmt.Fprintf(w, "%d", val)
+				return
+			}
+		}
+
+		http.Error(w, "Metric not found", http.StatusNotFound)
+	}
+}
+
+func rootHandler(storage *MemStorage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		gauges, counters := storage.GetAll()
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, "<html><body><h1>Metrics</h1><ul>")
+		for name, val := range gauges {
+			fmt.Fprintf(w, "<li>%s (gauge): %f</li>", name, val)
+		}
+		for name, val := range counters {
+			fmt.Fprintf(w, "<li>%s (counter): %d</li>", name, val)
+		}
+		fmt.Fprint(w, "</ul></body></html>")
+	}
+}
+
+// --- Main Entry ---
 func main() {
 	storage := NewMemStorage()
 
-	http.HandleFunc("/update/", updateHandler(storage))
+	r := chi.NewRouter()
+	r.Post("/update/{type}/{name}/{value}", updateHandler(storage))
+	r.Get("/value/{type}/{name}", getValueHandler(storage))
+	r.Get("/", rootHandler(storage))
 
-	fmt.Println("Server is running on http://localhost:8080")
-	err := http.ListenAndServe(":8080", nil)
-	if err != nil {
-		log.Fatalf("Server failed: %s", err)
+	fmt.Println("Server running at http://localhost:8080")
+	if err := http.ListenAndServe(":8080", r); err != nil {
+		log.Fatalf("Server failed: %v", err)
 	}
 }
