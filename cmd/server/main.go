@@ -6,6 +6,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -158,13 +159,24 @@ func rootHandler(storage *MemStorage) http.HandlerFunc {
 }
 
 func main() {
-	flag.StringVar(&serverAddress, "a", defaultServerAddress, "HTTP server address (default: localhost:8080)")
+	// Read flags
+	flagAddress := flag.String("a", "", "HTTP server address (default: localhost:8080)")
 	flag.Parse()
 
-	// Check if any unknown arguments remain
 	if len(flag.Args()) > 0 {
 		log.Fatalf("Unknown flags: %v", flag.Args())
 	}
+
+	// Apply priority: ENV > Flag > Default
+	address := os.Getenv("ADDRESS")
+	if address == "" {
+		if *flagAddress != "" {
+			address = *flagAddress
+		} else {
+			address = defaultServerAddress
+		}
+	}
+	serverAddress = address
 
 	storage := NewMemStorage()
 	r := chi.NewRouter()

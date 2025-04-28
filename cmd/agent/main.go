@@ -37,19 +37,60 @@ var gaugeMetrics = []string{
 }
 
 func main() {
-	serverAddrFlag := flag.String("a", defaultServerAddress, "HTTP server address (default: http://localhost:8080)")
-	reportIntervalFlag := flag.Int("r", defaultReportInterval, "Report interval in seconds (default: 10)")
-	pollIntervalFlag := flag.Int("p", defaultPollInterval, "Poll interval in seconds (default: 2)")
+	// Read flags
+	flagAddress := flag.String("a", "", "HTTP server address (default: http://localhost:8080)")
+	flagReport := flag.Int("r", 0, "Report interval in seconds (default: 10)")
+	flagPoll := flag.Int("p", 0, "Poll interval in seconds (default: 2)")
 	flag.Parse()
 
 	if len(flag.Args()) > 0 {
 		log.Fatalf("Unknown flags: %v", flag.Args())
 	}
 
-	serverAddress = *serverAddrFlag
-	pollInterval = time.Duration(*pollIntervalFlag) * time.Second
-	reportInterval = time.Duration(*reportIntervalFlag) * time.Second
+	// --- Address
+	address := os.Getenv("ADDRESS")
+	if address == "" {
+		if *flagAddress != "" {
+			address = *flagAddress
+		} else {
+			address = defaultServerAddress
+		}
+	}
+	serverAddress = address
 
+	// --- Report Interval
+	reportEnv := os.Getenv("REPORT_INTERVAL")
+	var reportSeconds int
+	if reportEnv != "" {
+		val, err := strconv.Atoi(reportEnv)
+		if err != nil {
+			log.Fatalf("Invalid REPORT_INTERVAL: %v", err)
+		}
+		reportSeconds = val
+	} else if *flagReport != 0 {
+		reportSeconds = *flagReport
+	} else {
+		reportSeconds = defaultReportInterval
+	}
+	reportInterval = time.Duration(reportSeconds) * time.Second
+
+	// --- Poll Interval
+	pollEnv := os.Getenv("POLL_INTERVAL")
+	var pollSeconds int
+	if pollEnv != "" {
+		val, err := strconv.Atoi(pollEnv)
+		if err != nil {
+			log.Fatalf("Invalid POLL_INTERVAL: %v", err)
+		}
+		pollSeconds = val
+	} else if *flagPoll != 0 {
+		pollSeconds = *flagPoll
+	} else {
+		pollSeconds = defaultPollInterval
+	}
+	pollInterval = time.Duration(pollSeconds) * time.Second
+
+	// --- Main program starts
 	gauges := make(map[string]float64)
 
 	tickerPoll := time.NewTicker(pollInterval)
