@@ -159,7 +159,6 @@ func rootHandler(storage *MemStorage) http.HandlerFunc {
 }
 
 func main() {
-	// Read flags
 	flagAddress := flag.String("a", "", "HTTP server address (default: localhost:8080)")
 	flag.Parse()
 
@@ -167,7 +166,7 @@ func main() {
 		log.Fatalf("Unknown flags: %v", flag.Args())
 	}
 
-	// Apply priority: ENV > Flag > Default
+	// Приоритет: ENV -> FLAG -> DEFAULT
 	address := os.Getenv("ADDRESS")
 	if address == "" {
 		if *flagAddress != "" {
