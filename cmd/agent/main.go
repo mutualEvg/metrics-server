@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"math/rand"
@@ -13,13 +14,18 @@ import (
 	"time"
 )
 
-var (
-	serverAddress  = "http://localhost:8080"
-	pollInterval   = 2 * time.Second
-	reportInterval = 10 * time.Second
+const (
+	defaultServerAddress  = "http://localhost:8080"
+	defaultPollInterval   = 2
+	defaultReportInterval = 10
 )
 
-var pollCount int64
+var (
+	serverAddress  string
+	pollInterval   time.Duration
+	reportInterval time.Duration
+	pollCount      int64
+)
 
 // List of metrics to collect from runtime.MemStats
 var gaugeMetrics = []string{
@@ -31,16 +37,26 @@ var gaugeMetrics = []string{
 }
 
 func main() {
-	// Maps to store current collected metrics
+	serverAddrFlag := flag.String("a", defaultServerAddress, "HTTP server address (default: http://localhost:8080)")
+	reportIntervalFlag := flag.Int("r", defaultReportInterval, "Report interval in seconds (default: 10)")
+	pollIntervalFlag := flag.Int("p", defaultPollInterval, "Poll interval in seconds (default: 2)")
+	flag.Parse()
+
+	if len(flag.Args()) > 0 {
+		log.Fatalf("Unknown flags: %v", flag.Args())
+	}
+
+	serverAddress = *serverAddrFlag
+	pollInterval = time.Duration(*pollIntervalFlag) * time.Second
+	reportInterval = time.Duration(*reportIntervalFlag) * time.Second
+
 	gauges := make(map[string]float64)
 
-	// Channels for coordinating polling and reporting
 	tickerPoll := time.NewTicker(pollInterval)
 	tickerReport := time.NewTicker(reportInterval)
 	defer tickerPoll.Stop()
 	defer tickerReport.Stop()
 
-	// Graceful stop
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, os.Interrupt)
 
@@ -52,7 +68,6 @@ func main() {
 		case <-tickerReport.C:
 			reportMetrics(gauges)
 
-		// Graceful stop
 		case <-signalChan:
 			fmt.Println("Received shutdown signal. Exiting...")
 			return

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"github.com/go-chi/chi/v5"
 	"log"
@@ -8,6 +9,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+)
+
+const (
+	defaultServerAddress = "localhost:8080"
+)
+
+var (
+	serverAddress string
 )
 
 // --- Metric Types ---
@@ -148,17 +157,24 @@ func rootHandler(storage *MemStorage) http.HandlerFunc {
 	}
 }
 
-// --- Main Entry ---
 func main() {
-	storage := NewMemStorage()
+	flag.StringVar(&serverAddress, "a", defaultServerAddress, "HTTP server address (default: localhost:8080)")
+	flag.Parse()
 
+	// Check if any unknown arguments remain
+	if len(flag.Args()) > 0 {
+		log.Fatalf("Unknown flags: %v", flag.Args())
+	}
+
+	storage := NewMemStorage()
 	r := chi.NewRouter()
+
 	r.Post("/update/{type}/{name}/{value}", updateHandler(storage))
 	r.Get("/value/{type}/{name}", getValueHandler(storage))
 	r.Get("/", rootHandler(storage))
 
-	fmt.Println("Server running at http://localhost:8080")
-	if err := http.ListenAndServe(":8080", r); err != nil {
+	fmt.Printf("Server running at http://%s\n", serverAddress)
+	if err := http.ListenAndServe(serverAddress, r); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
 }
