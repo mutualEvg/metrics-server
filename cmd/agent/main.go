@@ -58,6 +58,9 @@ func main() {
 	}
 	serverAddress = address
 
+	if !strings.HasPrefix(serverAddress, "http://") && !strings.HasPrefix(serverAddress, "https://") {
+		serverAddress = "http://" + serverAddress
+	}
 	// --- Report Interval
 	reportEnv := os.Getenv("REPORT_INTERVAL")
 	var reportSeconds int
