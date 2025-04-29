@@ -129,7 +129,7 @@ func getValueHandler(storage *MemStorage) http.HandlerFunc {
 		switch metricType {
 		case GaugeType:
 			if val, ok := storage.GetGauge(name); ok {
-				fmt.Fprintf(w, "%f", val)
+				fmt.Fprint(w, strconv.FormatFloat(val, 'f', -1, 64))
 				return
 			}
 		case CounterType:
