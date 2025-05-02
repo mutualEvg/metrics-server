@@ -97,8 +97,8 @@ func main() {
 	gauges := make(map[string]float64)
 
 	tickerPoll := time.NewTicker(pollInterval)
-	tickerReport := time.NewTicker(reportInterval)
 	defer tickerPoll.Stop()
+	tickerReport := time.NewTicker(reportInterval)
 	defer tickerReport.Stop()
 
 	signalChan := make(chan os.Signal, 1)
