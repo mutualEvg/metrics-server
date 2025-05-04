@@ -8,8 +8,6 @@ import (
 	"testing"
 )
 
-import _ "github.com/mutualEvg/metrics-server/storage"
-
 func TestUpdateHandler(t *testing.T) {
 	storage := storage.NewMemStorage()
 	router := chi.NewRouter()
