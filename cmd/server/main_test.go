@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 )
+
 import _ "github.com/mutualEvg/metrics-server/storage"
 
 func TestUpdateHandler(t *testing.T) {
@@ -21,40 +22,40 @@ func TestUpdateHandler(t *testing.T) {
 		wantStatus int
 	}{
 		{
-			name:       "Valid Gauge Update",
+			name:       "Valid_Gauge_Update",
 			method:     http.MethodPost,
 			url:        "/update/gauge/testGauge/123.45",
 			wantStatus: http.StatusOK,
 		},
 		{
-			name:       "Valid Counter Update",
+			name:       "Valid_Counter_Update",
 			method:     http.MethodPost,
 			url:        "/update/counter/testCounter/42",
 			wantStatus: http.StatusOK,
 		},
 		{
-			name:       "Invalid URL Format",
+			name:       "Invalid_URL_Format",
 			method:     http.MethodPost,
 			url:        "/update/gauge/onlyname",
 			wantStatus: http.StatusNotFound,
 		},
 		{
-			name:       "Invalid Metric Type",
+			name:       "Invalid_Metric_Type",
 			method:     http.MethodPost,
 			url:        "/update/unknown/test/10",
 			wantStatus: http.StatusBadRequest,
 		},
 		{
-			name:       "Invalid Value",
+			name:       "Invalid_Value",
 			method:     http.MethodPost,
 			url:        "/update/gauge/testGauge/notANumber",
 			wantStatus: http.StatusBadRequest,
 		},
 		{
-			name:       "Wrong Method",
+			name:       "Wrong_Method",
 			method:     http.MethodGet,
 			url:        "/update/gauge/testGauge/123.45",
-			wantStatus: http.StatusMethodNotAllowed, // router returns 405
+			wantStatus: http.StatusMethodNotAllowed,
 		},
 	}
 
