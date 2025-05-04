@@ -70,7 +70,7 @@ func TestUpdateHandler(t *testing.T) {
 			defer res.Body.Close()
 
 			if res.StatusCode != tt.wantStatus {
-				t.Errorf("got status %d, want %d", res.StatusCode, tt.wantStatus)
+				t.Errorf("got status %d, expected %d", res.StatusCode, tt.wantStatus)
 			}
 		})
 	}
