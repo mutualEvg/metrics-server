@@ -3,18 +3,23 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 )
 
 func TestPollMetrics(t *testing.T) {
-	gauges := make(map[string]float64)
-	pollMetrics(gauges)
+	var gauges sync.Map
+	pollMetrics(&gauges)
 
-	if len(gauges) == 0 {
-		t.Fatal("gauges map should not be empty after polling metrics")
-	}
+	foundRandom := false
+	gauges.Range(func(key, value any) bool {
+		if key == "RandomValue" {
+			foundRandom = true
+		}
+		return true
+	})
 
-	if _, ok := gauges["RandomValue"]; !ok {
+	if !foundRandom {
 		t.Error("RandomValue should be present in gauges")
 	}
 

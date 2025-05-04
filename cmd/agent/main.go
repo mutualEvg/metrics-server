@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -94,7 +95,7 @@ func main() {
 	pollInterval = time.Duration(pollSeconds) * time.Second
 
 	// --- Main program starts
-	gauges := make(map[string]float64)
+	var gauges sync.Map
 
 	tickerPoll := time.NewTicker(pollInterval)
 	tickerReport := time.NewTicker(reportInterval)
@@ -107,10 +108,10 @@ func main() {
 	for {
 		select {
 		case <-tickerPoll.C:
-			pollMetrics(gauges)
+			pollMetrics(&gauges)
 
 		case <-tickerReport.C:
-			reportMetrics(gauges)
+			reportMetrics(&gauges)
 
 		case <-signalChan:
 			fmt.Println("Received shutdown signal. Exiting...")
@@ -119,7 +120,7 @@ func main() {
 	}
 }
 
-func pollMetrics(gauges map[string]float64) {
+func pollMetrics(gauges *sync.Map) {
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
 
@@ -127,75 +128,78 @@ func pollMetrics(gauges map[string]float64) {
 	for _, metric := range gaugeMetrics {
 		switch metric {
 		case "Alloc":
-			gauges[metric] = float64(memStats.Alloc)
+			gauges.Store(metric, float64(memStats.Alloc))
 		case "BuckHashSys":
-			gauges[metric] = float64(memStats.BuckHashSys)
+			gauges.Store(metric, float64(memStats.BuckHashSys))
 		case "Frees":
-			gauges[metric] = float64(memStats.Frees)
+			gauges.Store(metric, float64(memStats.Frees))
 		case "GCCPUFraction":
-			gauges[metric] = memStats.GCCPUFraction
+			gauges.Store(metric, memStats.GCCPUFraction)
 		case "GCSys":
-			gauges[metric] = float64(memStats.GCSys)
+			gauges.Store(metric, float64(memStats.GCSys))
 		case "HeapAlloc":
-			gauges[metric] = float64(memStats.HeapAlloc)
+			gauges.Store(metric, float64(memStats.HeapAlloc))
 		case "HeapIdle":
-			gauges[metric] = float64(memStats.HeapIdle)
+			gauges.Store(metric, float64(memStats.HeapIdle))
 		case "HeapInuse":
-			gauges[metric] = float64(memStats.HeapInuse)
+			gauges.Store(metric, float64(memStats.HeapInuse))
 		case "HeapObjects":
-			gauges[metric] = float64(memStats.HeapObjects)
+			gauges.Store(metric, float64(memStats.HeapObjects))
 		case "HeapReleased":
-			gauges[metric] = float64(memStats.HeapReleased)
+			gauges.Store(metric, float64(memStats.HeapReleased))
 		case "HeapSys":
-			gauges[metric] = float64(memStats.HeapSys)
+			gauges.Store(metric, float64(memStats.HeapSys))
 		case "LastGC":
-			gauges[metric] = float64(memStats.LastGC)
+			gauges.Store(metric, float64(memStats.LastGC))
 		case "Lookups":
-			gauges[metric] = float64(memStats.Lookups)
+			gauges.Store(metric, float64(memStats.Lookups))
 		case "MCacheInuse":
-			gauges[metric] = float64(memStats.MCacheInuse)
+			gauges.Store(metric, float64(memStats.MCacheInuse))
 		case "MCacheSys":
-			gauges[metric] = float64(memStats.MCacheSys)
+			gauges.Store(metric, float64(memStats.MCacheSys))
 		case "MSpanInuse":
-			gauges[metric] = float64(memStats.MSpanInuse)
+			gauges.Store(metric, float64(memStats.MSpanInuse))
 		case "MSpanSys":
-			gauges[metric] = float64(memStats.MSpanSys)
+			gauges.Store(metric, float64(memStats.MSpanSys))
 		case "Mallocs":
-			gauges[metric] = float64(memStats.Mallocs)
+			gauges.Store(metric, float64(memStats.Mallocs))
 		case "NextGC":
-			gauges[metric] = float64(memStats.NextGC)
+			gauges.Store(metric, float64(memStats.NextGC))
 		case "NumForcedGC":
-			gauges[metric] = float64(memStats.NumForcedGC)
+			gauges.Store(metric, float64(memStats.NumForcedGC))
 		case "NumGC":
-			gauges[metric] = float64(memStats.NumGC)
+			gauges.Store(metric, float64(memStats.NumGC))
 		case "OtherSys":
-			gauges[metric] = float64(memStats.OtherSys)
+			gauges.Store(metric, float64(memStats.OtherSys))
 		case "PauseTotalNs":
-			gauges[metric] = float64(memStats.PauseTotalNs)
+			gauges.Store(metric, float64(memStats.PauseTotalNs))
 		case "StackInuse":
-			gauges[metric] = float64(memStats.StackInuse)
+			gauges.Store(metric, float64(memStats.StackInuse))
 		case "StackSys":
-			gauges[metric] = float64(memStats.StackSys)
+			gauges.Store(metric, float64(memStats.StackSys))
 		case "Sys":
-			gauges[metric] = float64(memStats.Sys)
+			gauges.Store(metric, float64(memStats.Sys))
 		case "TotalAlloc":
-			gauges[metric] = float64(memStats.TotalAlloc)
+			gauges.Store(metric, float64(memStats.TotalAlloc))
 		}
 	}
 
-	// Update RandomValue
-	gauges["RandomValue"] = rand.Float64()
+	// Add random metric
+	gauges.Store("RandomValue", rand.Float64())
 
-	// Increment PollCount
+	// Increment poll count
 	pollCount++
 }
 
-func reportMetrics(gauges map[string]float64) {
+func reportMetrics(gauges *sync.Map) {
 	client := &http.Client{}
 
-	for name, value := range gauges {
-		sendMetric(client, "gauge", name, fmt.Sprintf("%f", value))
-	}
+	gauges.Range(func(key, value any) bool {
+		name, _ := key.(string)
+		val, _ := value.(float64)
+		sendMetric(client, "gauge", name, fmt.Sprintf("%f", val))
+		return true
+	})
 
 	sendMetric(client, "counter", "PollCount", strconv.FormatInt(pollCount, 10))
 }

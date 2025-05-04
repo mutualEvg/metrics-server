@@ -1,191 +1,100 @@
+// cmd/server/main.go
 package main
 
 import (
-	"flag"
 	"fmt"
 	"github.com/go-chi/chi/v5"
+	"github.com/mutualEvg/metrics-server/config"
+	"github.com/mutualEvg/metrics-server/storage"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
-	"strings"
-	"sync"
 )
 
-const (
-	defaultServerAddress = "localhost:8080"
-)
-
-var (
-	serverAddress string
-)
-
-// --- Metric Types ---
 const (
 	GaugeType   = "gauge"
 	CounterType = "counter"
 )
 
-// --- Metric Storage ---
-type MemStorage struct {
-	gauges   map[string]float64
-	counters map[string]int64
-	mu       sync.RWMutex
-}
+func main() {
+	cfg := config.Load()
+	memStorage := storage.NewMemStorage()
 
-func NewMemStorage() *MemStorage {
-	return &MemStorage{
-		gauges:   make(map[string]float64),
-		counters: make(map[string]int64),
+	r := chi.NewRouter()
+	r.Post("/update/{type}/{name}/{value}", updateHandler(memStorage))
+	r.Get("/value/{type}/{name}", valueHandler(memStorage))
+	r.Get("/", rootHandler(memStorage))
+
+	fmt.Printf("Server running at %s\n", cfg.ServerAddress)
+	if err := http.ListenAndServe(cfg.ServerAddress, r); err != nil {
+		log.Fatalf("Server failed: %v", err)
 	}
 }
 
-func (ms *MemStorage) UpdateGauge(name string, value float64) {
-	ms.mu.Lock()
-	defer ms.mu.Unlock()
-	ms.gauges[name] = value
-}
-
-func (ms *MemStorage) UpdateCounter(name string, value int64) {
-	ms.mu.Lock()
-	defer ms.mu.Unlock()
-	ms.counters[name] += value
-}
-
-func (ms *MemStorage) GetGauge(name string) (float64, bool) {
-	ms.mu.RLock()
-	defer ms.mu.RUnlock()
-	val, ok := ms.gauges[name]
-	return val, ok
-}
-
-func (ms *MemStorage) GetCounter(name string) (int64, bool) {
-	ms.mu.RLock()
-	defer ms.mu.RUnlock()
-	val, ok := ms.counters[name]
-	return val, ok
-}
-
-func (ms *MemStorage) GetAll() (map[string]float64, map[string]int64) {
-	ms.mu.RLock()
-	defer ms.mu.RUnlock()
-	gCopy := make(map[string]float64)
-	cCopy := make(map[string]int64)
-	for k, v := range ms.gauges {
-		gCopy[k] = v
-	}
-	for k, v := range ms.counters {
-		cCopy[k] = v
-	}
-	return gCopy, cCopy
-}
-
-// --- Handlers ---
-
-func updateHandler(storage *MemStorage) http.HandlerFunc {
+func updateHandler(s storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/update/"), "/")
-		if len(parts) != 3 {
-			http.Error(w, "Invalid URL format", http.StatusNotFound)
-			return
-		}
+		typ := chi.URLParam(r, "type")
+		name := chi.URLParam(r, "name")
+		value := chi.URLParam(r, "value")
 
-		metricType := parts[0]
-		metricName := parts[1]
-		metricValue := parts[2]
-
-		switch metricType {
+		switch typ {
 		case GaugeType:
-			val, err := strconv.ParseFloat(metricValue, 64)
+			v, err := strconv.ParseFloat(value, 64)
 			if err != nil {
-				http.Error(w, "Invalid gauge value", http.StatusBadRequest)
+				http.Error(w, "invalid gauge value", http.StatusBadRequest)
 				return
 			}
-			storage.UpdateGauge(metricName, val)
-
+			s.UpdateGauge(name, v)
 		case CounterType:
-			val, err := strconv.ParseInt(metricValue, 10, 64)
+			v, err := strconv.ParseInt(value, 10, 64)
 			if err != nil {
-				http.Error(w, "Invalid counter value", http.StatusBadRequest)
+				http.Error(w, "invalid counter value", http.StatusBadRequest)
 				return
 			}
-			storage.UpdateCounter(metricName, val)
-
+			s.UpdateCounter(name, v)
 		default:
-			http.Error(w, "Unknown metric type", http.StatusBadRequest)
+			http.Error(w, "unknown metric type", http.StatusBadRequest)
 			return
 		}
 
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, "OK")
+		w.Write([]byte("OK"))
 	}
 }
 
-func getValueHandler(storage *MemStorage) http.HandlerFunc {
+func valueHandler(s storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		metricType := chi.URLParam(r, "type")
+		typ := chi.URLParam(r, "type")
 		name := chi.URLParam(r, "name")
 
-		switch metricType {
+		switch typ {
 		case GaugeType:
-			if val, ok := storage.GetGauge(name); ok {
-				fmt.Fprint(w, strconv.FormatFloat(val, 'f', -1, 64))
+			if v, ok := s.GetGauge(name); ok {
+				w.Write([]byte(strconv.FormatFloat(v, 'f', -1, 64)))
 				return
 			}
 		case CounterType:
-			if val, ok := storage.GetCounter(name); ok {
-				fmt.Fprintf(w, "%d", val)
+			if v, ok := s.GetCounter(name); ok {
+				w.Write([]byte(strconv.FormatInt(v, 10)))
 				return
 			}
 		}
 
-		http.Error(w, "Metric not found", http.StatusNotFound)
+		http.Error(w, "metric not found", http.StatusNotFound)
 	}
 }
 
-func rootHandler(storage *MemStorage) http.HandlerFunc {
+func rootHandler(s storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		gauges, counters := storage.GetAll()
+		g, c := s.GetAll()
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprint(w, "<html><body><h1>Metrics</h1><ul>")
-		for name, val := range gauges {
-			fmt.Fprintf(w, "<li>%s (gauge): %f</li>", name, val)
+		w.Write([]byte("<html><body><h1>Metrics</h1><ul>"))
+		for k, v := range g {
+			fmt.Fprintf(w, "<li>%s (gauge): %f</li>", k, v)
 		}
-		for name, val := range counters {
-			fmt.Fprintf(w, "<li>%s (counter): %d</li>", name, val)
+		for k, v := range c {
+			fmt.Fprintf(w, "<li>%s (counter): %d</li>", k, v)
 		}
-		fmt.Fprint(w, "</ul></body></html>")
-	}
-}
-
-func main() {
-	flagAddress := flag.String("a", "", "HTTP server address (default: localhost:8080)")
-	flag.Parse()
-
-	if len(flag.Args()) > 0 {
-		log.Fatalf("Unknown flags: %v", flag.Args())
-	}
-
-	// Приоритет: ENV -> FLAG -> DEFAULT
-	address := os.Getenv("ADDRESS")
-	if address == "" {
-		if *flagAddress != "" {
-			address = *flagAddress
-		} else {
-			address = defaultServerAddress
-		}
-	}
-	serverAddress = address
-
-	storage := NewMemStorage()
-	r := chi.NewRouter()
-
-	r.Post("/update/{type}/{name}/{value}", updateHandler(storage))
-	r.Get("/value/{type}/{name}", getValueHandler(storage))
-	r.Get("/", rootHandler(storage))
-
-	fmt.Printf("Server running at http://%s\n", serverAddress)
-	if err := http.ListenAndServe(serverAddress, r); err != nil {
-		log.Fatalf("Server failed: %v", err)
+		w.Write([]byte("</ul></body></html>"))
 	}
 }

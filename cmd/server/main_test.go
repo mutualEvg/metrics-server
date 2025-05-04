@@ -2,13 +2,15 @@ package main
 
 import (
 	"github.com/go-chi/chi/v5"
+	"github.com/mutualEvg/metrics-server/storage"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
+import _ "github.com/mutualEvg/metrics-server/storage"
 
 func TestUpdateHandler(t *testing.T) {
-	storage := NewMemStorage()
+	storage := storage.NewMemStorage()
 	router := chi.NewRouter()
 	router.Post("/update/{type}/{name}/{value}", updateHandler(storage))
 
