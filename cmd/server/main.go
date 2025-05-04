@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -26,7 +27,8 @@ func main() {
 	r.Get("/", rootHandler(memStorage))
 
 	fmt.Printf("Server running at %s\n", cfg.ServerAddress)
-	if err := http.ListenAndServe(cfg.ServerAddress, r); err != nil {
+	// this fixes => Server failed: listen tcp: address http://localhost:8080: too many colons in address
+	if err := http.ListenAndServe(strings.TrimPrefix(strings.TrimPrefix(cfg.ServerAddress, "http://"), "https://"), r); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
 }
