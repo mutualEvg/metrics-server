@@ -4,12 +4,17 @@ package main
 import (
 	"fmt"
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/mutualEvg/metrics-server/config"
 	"github.com/mutualEvg/metrics-server/storage"
-	"log"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
+
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -21,16 +26,46 @@ func main() {
 	cfg := config.Load()
 	memStorage := storage.NewMemStorage()
 
+	// Setup zerolog
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+
 	r := chi.NewRouter()
+
+	// Add logging middleware
+	r.Use(loggingMiddleware)
+
 	r.Post("/update/{type}/{name}/{value}", updateHandler(memStorage))
 	r.Get("/value/{type}/{name}", valueHandler(memStorage))
 	r.Get("/", rootHandler(memStorage))
 
+	addr := strings.TrimPrefix(cfg.ServerAddress, "http://")
+	addr = strings.TrimPrefix(addr, "https://")
+
 	fmt.Printf("Server running at %s\n", cfg.ServerAddress)
-	// this fixes => Server failed: listen tcp: address http://localhost:8080: too many colons in address
-	if err := http.ListenAndServe(strings.TrimPrefix(strings.TrimPrefix(cfg.ServerAddress, "http://"), "https://"), r); err != nil {
-		log.Fatalf("Server failed: %v", err)
+	if err := http.ListenAndServe(addr, r); err != nil {
+		log.Fatal().Err(err).Msg("Server failed")
 	}
+}
+
+func loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+
+		// Wrap the ResponseWriter to capture status and size
+		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+
+		next.ServeHTTP(ww, r)
+
+		duration := time.Since(start)
+
+		log.Info().
+			Str("method", r.Method).
+			Str("uri", r.RequestURI).
+			Int("status", ww.Status()).
+			Int("size", ww.BytesWritten()).
+			Dur("duration", duration).
+			Msg("handled request")
+	})
 }
 
 func updateHandler(s storage.Storage) http.HandlerFunc {
