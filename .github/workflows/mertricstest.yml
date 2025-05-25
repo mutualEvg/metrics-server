@@ -55,12 +55,12 @@ jobs:
       - name: Setup go deps
         run: |
           go install golang.org/x/tools/cmd/goimports@v0.20.0
-
+          go mod tidy
+          go mod verify
 
       - name: Build server binary
         run: |
-          cd cmd/server
-          go build -buildvcs=false -o server
+          go build -buildvcs=false -o cmd/server/server ./cmd/server
 
       - name: "Code increment #1"
         if: |
@@ -85,8 +85,7 @@ jobs:
 
       - name: Build agent binary
         run: |
-          cd cmd/agent
-          go build -buildvcs=false  -o agent
+          go build -buildvcs=false -o cmd/agent/agent ./cmd/agent
 
       - name: "Code increment #2"
         if: |

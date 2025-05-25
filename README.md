@@ -29,6 +29,12 @@ This metrics server supports both legacy URL-based API and modern JSON API for c
 
 ## How to Run Tests Locally
 
+### Prerequisites
+Make sure to run this first to ensure all dependencies are properly resolved:
+```bash
+go mod tidy
+```
+
 ### Run All Tests
 ```bash
 go test -v ./...
@@ -62,6 +68,22 @@ go install golang.org/x/tools/cmd/goimports@v0.20.0
 goimports -l .
 ```
 
+## Troubleshooting
+
+### "no required module provides package" Error
+If you encounter an error like:
+```
+no required module provides package github.com/mutualEvg/metrics-server/internal/models
+```
+
+Run the following commands:
+```bash
+go mod tidy
+go mod verify
+```
+
+This ensures all internal packages are properly recognized by the Go module system.
+
 ## Getting Started
 
 1. Clone the repository to any suitable directory on your computer.
@@ -71,16 +93,16 @@ goimports -l .
 
 ### Build the Server
 ```bash
-cd cmd/server
-go build -o server
-./server
+# From project root
+go build -o cmd/server/server ./cmd/server
+./cmd/server/server
 ```
 
 ### Build the Agent
 ```bash
-cd cmd/agent  
-go build -o agent
-./agent
+# From project root
+go build -o cmd/agent/agent ./cmd/agent
+./cmd/agent/agent
 ```
 
 ### Configuration
