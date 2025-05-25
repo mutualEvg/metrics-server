@@ -2,6 +2,31 @@
 
 Repository template for the "Metrics Collection and Alerting Server" track.
 
+## Features
+
+This metrics server supports both legacy URL-based API and modern JSON API for collecting and retrieving metrics.
+
+### API Endpoints
+
+#### Legacy URL-based API
+- `POST /update/{type}/{name}/{value}` - Update a metric
+- `GET /value/{type}/{name}` - Get a metric value
+- `GET /` - View all metrics in HTML format
+
+#### JSON API
+- `POST /update/` - Update a metric using JSON payload
+- `POST /value/` - Get a metric value using JSON payload
+
+#### JSON Structure
+```json
+{
+  "id": "metric_name",
+  "type": "gauge|counter", 
+  "delta": 123,     // for counter metrics
+  "value": 123.45   // for gauge metrics
+}
+```
+
 ## How to Run Tests Locally
 
 ### Run All Tests
@@ -41,6 +66,43 @@ goimports -l .
 
 1. Clone the repository to any suitable directory on your computer.
 2. In the repository root, run the command `go mod init <name>` (where `<name>` is your GitHub repository address without the `https://` prefix) to create a module.
+
+## Building and Running
+
+### Build the Server
+```bash
+cd cmd/server
+go build -o server
+./server
+```
+
+### Build the Agent
+```bash
+cd cmd/agent  
+go build -o agent
+./agent
+```
+
+### Configuration
+
+#### Server
+- Default address: `localhost:8080`
+- Set via `ADDRESS` environment variable
+
+#### Agent
+- Default server address: `http://localhost:8080`
+- Default poll interval: 2 seconds
+- Default report interval: 10 seconds
+
+Environment variables:
+- `ADDRESS` - Server address
+- `POLL_INTERVAL` - Metrics polling interval in seconds
+- `REPORT_INTERVAL` - Metrics reporting interval in seconds
+
+Command line flags:
+- `-a` - Server address
+- `-p` - Poll interval in seconds  
+- `-r` - Report interval in seconds
 
 ## Template Updates
 

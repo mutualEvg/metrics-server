@@ -2,10 +2,14 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/mutualEvg/metrics-server/config"
+	"github.com/mutualEvg/metrics-server/internal/models"
 	"github.com/mutualEvg/metrics-server/storage"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -34,8 +38,14 @@ func main() {
 	// Add logging middleware
 	r.Use(loggingMiddleware)
 
+	// Legacy URL-based API
 	r.Post("/update/{type}/{name}/{value}", updateHandler(memStorage))
 	r.Get("/value/{type}/{name}", valueHandler(memStorage))
+
+	// New JSON API
+	r.Post("/update/", updateJSONHandler(memStorage))
+	r.Post("/value/", valueJSONHandler(memStorage))
+
 	r.Get("/", rootHandler(memStorage))
 
 	addr := strings.TrimPrefix(cfg.ServerAddress, "http://")
@@ -133,5 +143,136 @@ func rootHandler(s storage.Storage) http.HandlerFunc {
 			fmt.Fprintf(w, "<li>%s (counter): %d</li>", k, v)
 		}
 		w.Write([]byte("</ul></body></html>"))
+	}
+}
+
+// updateJSONHandler handles POST /update/ with JSON body
+func updateJSONHandler(s storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Content-Type") != "application/json" {
+			http.Error(w, "Content-Type must be application/json", http.StatusBadRequest)
+			return
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read request body", http.StatusBadRequest)
+			return
+		}
+
+		var metric models.Metrics
+		if err := json.Unmarshal(body, &metric); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		// Validate required fields
+		if metric.ID == "" || metric.MType == "" {
+			http.Error(w, "ID and MType are required", http.StatusBadRequest)
+			return
+		}
+
+		switch metric.MType {
+		case GaugeType:
+			if metric.Value == nil {
+				http.Error(w, "Value is required for gauge metrics", http.StatusBadRequest)
+				return
+			}
+			s.UpdateGauge(metric.ID, *metric.Value)
+			// Return the updated metric
+			response := models.Metrics{
+				ID:    metric.ID,
+				MType: metric.MType,
+				Value: metric.Value,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(response)
+
+		case CounterType:
+			if metric.Delta == nil {
+				http.Error(w, "Delta is required for counter metrics", http.StatusBadRequest)
+				return
+			}
+			s.UpdateCounter(metric.ID, *metric.Delta)
+			// Get the updated value from storage
+			if updatedValue, ok := s.GetCounter(metric.ID); ok {
+				response := models.Metrics{
+					ID:    metric.ID,
+					MType: metric.MType,
+					Delta: &updatedValue,
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(response)
+			} else {
+				http.Error(w, "Failed to retrieve updated counter value", http.StatusInternalServerError)
+				return
+			}
+
+		default:
+			http.Error(w, "Unknown metric type", http.StatusBadRequest)
+			return
+		}
+	}
+}
+
+// valueJSONHandler handles POST /value/ with JSON body
+func valueJSONHandler(s storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Content-Type") != "application/json" {
+			http.Error(w, "Content-Type must be application/json", http.StatusBadRequest)
+			return
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read request body", http.StatusBadRequest)
+			return
+		}
+
+		var metric models.Metrics
+		if err := json.Unmarshal(body, &metric); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		// Validate required fields
+		if metric.ID == "" || metric.MType == "" {
+			http.Error(w, "ID and MType are required", http.StatusBadRequest)
+			return
+		}
+
+		switch metric.MType {
+		case GaugeType:
+			if value, ok := s.GetGauge(metric.ID); ok {
+				response := models.Metrics{
+					ID:    metric.ID,
+					MType: metric.MType,
+					Value: &value,
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(response)
+			} else {
+				http.Error(w, "Metric not found", http.StatusNotFound)
+				return
+			}
+
+		case CounterType:
+			if value, ok := s.GetCounter(metric.ID); ok {
+				response := models.Metrics{
+					ID:    metric.ID,
+					MType: metric.MType,
+					Delta: &value,
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(response)
+			} else {
+				http.Error(w, "Metric not found", http.StatusNotFound)
+				return
+			}
+
+		default:
+			http.Error(w, "Unknown metric type", http.StatusBadRequest)
+			return
+		}
 	}
 }
