@@ -1,32 +1,67 @@
 # go-musthave-metrics-tpl
 
-Шаблон репозитория для трека «Сервер сбора метрик и алертинга».
+Repository template for the "Metrics Collection and Alerting Server" track.
 
-## Начало работы
+## How to Run Tests Locally
 
-1. Склонируйте репозиторий в любую подходящую директорию на вашем компьютере.
-2. В корне репозитория выполните команду `go mod init <name>` (где `<name>` — адрес вашего репозитория на GitHub без префикса `https://`) для создания модуля.
+### Run All Tests
+```bash
+go test -v ./...
+```
 
-## Обновление шаблона
+### Run Tests for Specific Components
+```bash
+# Server tests only
+go test -v ./cmd/server
 
-Чтобы иметь возможность получать обновления автотестов и других частей шаблона, выполните команду:
+# Agent tests only
+go test -v ./cmd/agent
+```
+
+### Run Specific Tests
+```bash
+# Run only the UpdateHandler test
+go test -v ./cmd/server -run TestUpdateHandler
+
+# Run only the PollMetrics test
+go test -v ./cmd/agent -run TestPollMetrics
+```
+
+### Static Code Analysis
+```bash
+# Check with go vet
+go vet ./...
+
+# Check import formatting
+go install golang.org/x/tools/cmd/goimports@v0.20.0
+goimports -l .
+```
+
+## Getting Started
+
+1. Clone the repository to any suitable directory on your computer.
+2. In the repository root, run the command `go mod init <name>` (where `<name>` is your GitHub repository address without the `https://` prefix) to create a module.
+
+## Template Updates
+
+To be able to receive updates for autotests and other parts of the template, run the command:
 
 ```
 git remote add -m main template https://github.com/Yandex-Practicum/go-musthave-metrics-tpl.git
 ```
 
-Для обновления кода автотестов выполните команду:
+To update the autotest code, run the command:
 
 ```
 git fetch template && git checkout template/main .github
 ```
 
-Затем добавьте полученные изменения в свой репозиторий.
+Then add the received changes to your repository.
 
-## Запуск автотестов
+## Running Autotests
 
-Для успешного запуска автотестов называйте ветки `iter<number>`, где `<number>` — порядковый номер инкремента. Например, в ветке с названием `iter4` запустятся автотесты для инкрементов с первого по четвёртый.
+For successful autotest execution, name branches `iter<number>`, where `<number>` is the increment sequence number. For example, in a branch named `iter4`, autotests for increments one through four will run.
 
-При мёрже ветки с инкрементом в основную ветку `main` будут запускаться все автотесты.
+When merging an increment branch into the main `main` branch, all autotests will run.
 
-Подробнее про локальный и автоматический запуск читайте в [README автотестов](https://github.com/Yandex-Practicum/go-autotests).
+For more details about local and automatic execution, read the [autotests README](https://github.com/Yandex-Practicum/go-autotests).
