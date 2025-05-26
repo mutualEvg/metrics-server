@@ -27,6 +27,16 @@ This metrics server supports both legacy URL-based API and modern JSON API for c
 }
 ```
 
+### Compression Support
+
+The server supports gzip compression for both requests and responses:
+
+- **Request Compression**: Send `Content-Encoding: gzip` header with compressed request body
+- **Response Compression**: Send `Accept-Encoding: gzip` header to receive compressed responses
+- **Supported Content Types**: `application/json`, `text/html`, `text/plain`
+
+The agent automatically sends compressed JSON data to reduce network traffic.
+
 ## How to Run Tests Locally
 
 ### Prerequisites
@@ -56,6 +66,10 @@ go test -v ./cmd/server -run TestUpdateHandler
 
 # Run only the PollMetrics test
 go test -v ./cmd/agent -run TestPollMetrics
+
+# Run gzip compression tests
+go test -v ./cmd/server -run TestGzip
+go test -v ./internal/middleware -run TestGzip
 ```
 
 ### Static Code Analysis

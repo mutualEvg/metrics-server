@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -231,7 +232,7 @@ func sendMetric(client *http.Client, metricType, metricName, metricValue string)
 	}
 }
 
-// sendMetricJSON sends metrics using the new JSON API
+// sendMetricJSON sends metrics using the new JSON API with gzip compression
 func sendMetricJSON(client *http.Client, metricType, metricName string, gaugeValue float64, counterValue int64) {
 	var metric models.Metrics
 	metric.ID = metricName
@@ -253,14 +254,30 @@ func sendMetricJSON(client *http.Client, metricType, metricName string, gaugeVal
 		return
 	}
 
+	// Compress the JSON data
+	var compressedData bytes.Buffer
+	gzipWriter := gzip.NewWriter(&compressedData)
+	_, err = gzipWriter.Write(jsonData)
+	if err != nil {
+		log.Printf("Failed to compress data: %v", err)
+		return
+	}
+	err = gzipWriter.Close()
+	if err != nil {
+		log.Printf("Failed to close gzip writer: %v", err)
+		return
+	}
+
 	url := fmt.Sprintf("%s/update/", serverAddress)
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest(http.MethodPost, url, &compressedData)
 	if err != nil {
 		log.Printf("Failed to create request: %v", err)
 		return
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set("Accept-Encoding", "gzip")
 
 	resp, err := client.Do(req)
 	if err != nil {

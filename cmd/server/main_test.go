@@ -2,12 +2,15 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	gzipmw "github.com/mutualEvg/metrics-server/internal/middleware"
 	"github.com/mutualEvg/metrics-server/internal/models"
 	"github.com/mutualEvg/metrics-server/storage"
 )
@@ -208,5 +211,89 @@ func TestValueJSONHandler(t *testing.T) {
 				t.Errorf("got status %d, expected %d", res.StatusCode, tt.wantStatus)
 			}
 		})
+	}
+}
+
+func TestGzipCompression(t *testing.T) {
+	storage := storage.NewMemStorage()
+	router := chi.NewRouter()
+	router.Use(gzipmw.GzipMiddleware)
+	router.Post("/update/", updateJSONHandler(storage))
+
+	metric := models.Metrics{
+		ID:    "testGauge",
+		MType: "gauge",
+		Value: func() *float64 { v := 123.45; return &v }(),
+	}
+
+	jsonData, _ := json.Marshal(metric)
+	req := httptest.NewRequest(http.MethodPost, "/update/", bytes.NewBuffer(jsonData))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	// Check that response is compressed
+	if rec.Header().Get("Content-Encoding") != "gzip" {
+		t.Error("Expected Content-Encoding: gzip header")
+	}
+
+	// Decompress and verify response
+	gz, err := gzip.NewReader(rec.Body)
+	if err != nil {
+		t.Fatalf("Failed to create gzip reader: %v", err)
+	}
+	defer gz.Close()
+
+	decompressed, err := io.ReadAll(gz)
+	if err != nil {
+		t.Fatalf("Failed to decompress: %v", err)
+	}
+
+	var response models.Metrics
+	if err := json.Unmarshal(decompressed, &response); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+
+	if response.ID != "testGauge" || response.MType != "gauge" {
+		t.Errorf("Unexpected response: %+v", response)
+	}
+}
+
+func TestGzipDecompression(t *testing.T) {
+	storage := storage.NewMemStorage()
+	router := chi.NewRouter()
+	router.Use(gzipmw.GzipMiddleware)
+	router.Post("/update/", updateJSONHandler(storage))
+
+	metric := models.Metrics{
+		ID:    "testGauge",
+		MType: "gauge",
+		Value: func() *float64 { v := 123.45; return &v }(),
+	}
+
+	jsonData, _ := json.Marshal(metric)
+
+	// Compress the request data
+	var compressedData bytes.Buffer
+	gz := gzip.NewWriter(&compressedData)
+	gz.Write(jsonData)
+	gz.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/update/", &compressedData)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+
+	// Verify the metric was stored
+	if value, ok := storage.GetGauge("testGauge"); !ok || value != 123.45 {
+		t.Errorf("Expected gauge value 123.45, got %f", value)
 	}
 }

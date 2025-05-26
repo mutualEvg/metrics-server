@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/mutualEvg/metrics-server/config"
+	gzipmw "github.com/mutualEvg/metrics-server/internal/middleware"
 	"github.com/mutualEvg/metrics-server/internal/models"
 	"github.com/mutualEvg/metrics-server/storage"
 	"github.com/rs/zerolog"
@@ -35,8 +36,9 @@ func main() {
 
 	r := chi.NewRouter()
 
-	// Add logging middleware
+	// Add middleware
 	r.Use(loggingMiddleware)
+	r.Use(gzipmw.GzipMiddleware)
 
 	// Legacy URL-based API
 	r.Post("/update/{type}/{name}/{value}", updateHandler(memStorage))
