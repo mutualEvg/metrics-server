@@ -37,6 +37,29 @@ The server supports gzip compression for both requests and responses:
 
 The agent automatically sends compressed JSON data to reduce network traffic.
 
+### File Storage
+
+The server can persist metrics to disk and restore them on startup:
+
+- **Periodic Saving**: Automatically save metrics at configurable intervals
+- **Synchronous Saving**: Save immediately on every metric update (when interval = 0)
+- **Graceful Shutdown**: Save all data when server receives shutdown signal
+- **Restore on Startup**: Optionally load previously saved metrics on server start
+
+#### Storage Configuration
+
+**Environment Variables:**
+- `STORE_INTERVAL` - Save interval in seconds (default: 300, 0 = synchronous)
+- `FILE_STORAGE_PATH` - Path to storage file (default: `/tmp/metrics-db.json`)
+- `RESTORE` - Restore data on startup (default: `true`)
+
+**Command Line Flags:**
+- `-i` - Store interval in seconds
+- `-f` - File storage path
+- `--restore` - Restore previously stored values
+
+**Priority:** Environment variables > Command line flags > Default values
+
 ## How to Run Tests Locally
 
 ### Prerequisites
@@ -70,6 +93,10 @@ go test -v ./cmd/agent -run TestPollMetrics
 # Run gzip compression tests
 go test -v ./cmd/server -run TestGzip
 go test -v ./internal/middleware -run TestGzip
+
+# Run file storage tests
+go test -v ./storage -run TestFile
+go test -v ./storage -run TestPeriodicSaver
 ```
 
 ### Static Code Analysis
@@ -119,11 +146,56 @@ go build -o cmd/agent/agent ./cmd/agent
 ./cmd/agent/agent
 ```
 
+### Usage Examples
+
+#### Run server with custom storage settings
+```bash
+# Periodic saving every 60 seconds
+./cmd/server/server -i 60 -f /var/lib/metrics.json --restore
+
+# Synchronous saving (save on every update)
+./cmd/server/server -i 0 -f /var/lib/metrics.json
+
+# Using environment variables
+export STORE_INTERVAL=120
+export FILE_STORAGE_PATH=/data/metrics.json
+export RESTORE=true
+./cmd/server/server
+```
+
+#### Example storage file format
+```json
+{
+  "gauges": {
+    "Alloc": 1234567,
+    "HeapInuse": 2345678,
+    "RandomValue": 0.123456
+  },
+  "counters": {
+    "PollCount": 42
+  }
+}
+```
+
 ### Configuration
 
 #### Server
 - Default address: `localhost:8080`
-- Set via `ADDRESS` environment variable
+- Default store interval: 300 seconds
+- Default file storage path: `/tmp/metrics-db.json`
+- Default restore: `true`
+
+Environment variables:
+- `ADDRESS` - Server address
+- `STORE_INTERVAL` - Metrics save interval in seconds (0 for synchronous)
+- `FILE_STORAGE_PATH` - Path to metrics storage file
+- `RESTORE` - Restore metrics on startup (true/false)
+
+Command line flags:
+- `-a` - Server address
+- `-i` - Store interval in seconds
+- `-f` - File storage path
+- `--restore` - Restore previously stored values
 
 #### Agent
 - Default server address: `http://localhost:8080`

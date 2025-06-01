@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -16,7 +19,6 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +35,32 @@ func main() {
 
 	// Setup zerolog
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+
+	// Setup file storage
+	fileManager := storage.NewFileManager(cfg.FileStoragePath)
+
+	// Configure synchronous saving if store interval is 0
+	syncSave := cfg.StoreInterval == 0
+	memStorage.SetFileManager(fileManager, syncSave)
+
+	// Restore data if configured
+	if cfg.Restore {
+		if err := fileManager.LoadFromFile(memStorage); err != nil {
+			log.Error().Err(err).Msg("Failed to restore data from file")
+		} else {
+			log.Info().Str("file", cfg.FileStoragePath).Msg("Data restored from file")
+		}
+	}
+
+	// Setup periodic saving if not synchronous
+	var periodicSaver *storage.PeriodicSaver
+	if !syncSave {
+		periodicSaver = storage.NewPeriodicSaver(fileManager, memStorage, cfg.StoreInterval)
+		periodicSaver.Start()
+		log.Info().Dur("interval", cfg.StoreInterval).Msg("Started periodic saving")
+	} else {
+		log.Info().Msg("Synchronous saving enabled")
+	}
 
 	r := chi.NewRouter()
 
@@ -53,10 +81,41 @@ func main() {
 	addr := strings.TrimPrefix(cfg.ServerAddress, "http://")
 	addr = strings.TrimPrefix(addr, "https://")
 
-	fmt.Printf("Server running at %s\n", cfg.ServerAddress)
-	if err := http.ListenAndServe(addr, r); err != nil {
-		log.Fatal().Err(err).Msg("Server failed")
+	// Setup graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	server := &http.Server{
+		Addr:    addr,
+		Handler: r,
 	}
+
+	// Start server in a goroutine
+	go func() {
+		fmt.Printf("Server running at %s\n", cfg.ServerAddress)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal().Err(err).Msg("Server failed")
+		}
+	}()
+
+	// Wait for shutdown signal
+	<-sigChan
+	log.Info().Msg("Shutdown signal received")
+
+	// Stop periodic saving
+	if periodicSaver != nil {
+		periodicSaver.Stop()
+		log.Info().Msg("Stopped periodic saving")
+	}
+
+	// Save final state
+	if err := fileManager.SaveToFile(memStorage); err != nil {
+		log.Error().Err(err).Msg("Failed to save final state")
+	} else {
+		log.Info().Str("file", cfg.FileStoragePath).Msg("Final state saved")
+	}
+
+	log.Info().Msg("Server shutdown complete")
 }
 
 func loggingMiddleware(next http.Handler) http.Handler {

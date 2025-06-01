@@ -12,9 +12,11 @@ type Storage interface {
 }
 
 type MemStorage struct {
-	gauges   map[string]float64
-	counters map[string]int64
-	mu       sync.RWMutex
+	gauges      map[string]float64
+	counters    map[string]int64
+	mu          sync.RWMutex
+	fileManager *FileManager
+	syncSave    bool
 }
 
 func NewMemStorage() *MemStorage {
@@ -24,16 +26,34 @@ func NewMemStorage() *MemStorage {
 	}
 }
 
+// SetFileManager sets the file manager for this storage
+func (ms *MemStorage) SetFileManager(fm *FileManager, syncSave bool) {
+	ms.fileManager = fm
+	ms.syncSave = syncSave
+}
+
 func (ms *MemStorage) UpdateGauge(name string, value float64) {
 	ms.mu.Lock()
-	defer ms.mu.Unlock()
 	ms.gauges[name] = value
+
+	// Save synchronously if configured
+	if ms.syncSave && ms.fileManager != nil {
+		// Use internal method to avoid deadlock
+		ms.saveToFileInternal()
+	}
+	ms.mu.Unlock()
 }
 
 func (ms *MemStorage) UpdateCounter(name string, value int64) {
 	ms.mu.Lock()
-	defer ms.mu.Unlock()
 	ms.counters[name] += value
+
+	// Save synchronously if configured
+	if ms.syncSave && ms.fileManager != nil {
+		// Use internal method to avoid deadlock
+		ms.saveToFileInternal()
+	}
+	ms.mu.Unlock()
 }
 
 func (ms *MemStorage) GetGauge(name string) (float64, bool) {
@@ -62,4 +82,60 @@ func (ms *MemStorage) GetAll() (map[string]float64, map[string]int64) {
 		cCopy[k] = v
 	}
 	return gCopy, cCopy
+}
+
+// getAllInternal returns copies of all metrics without acquiring locks
+// This method assumes the caller already holds the appropriate locks
+func (ms *MemStorage) getAllInternal() (map[string]float64, map[string]int64) {
+	gCopy := make(map[string]float64)
+	cCopy := make(map[string]int64)
+	for k, v := range ms.gauges {
+		gCopy[k] = v
+	}
+	for k, v := range ms.counters {
+		cCopy[k] = v
+	}
+	return gCopy, cCopy
+}
+
+// saveToFileInternal saves to file without acquiring locks
+// This method assumes the caller already holds the appropriate locks
+func (ms *MemStorage) saveToFileInternal() {
+	if ms.fileManager != nil {
+		gauges, counters := ms.getAllInternal()
+		// Create a temporary storage interface for saving
+		tempStorage := &tempStorageForSaving{
+			gauges:   gauges,
+			counters: counters,
+		}
+		ms.fileManager.SaveToFile(tempStorage)
+	}
+}
+
+// tempStorageForSaving is a temporary implementation of Storage interface for saving
+type tempStorageForSaving struct {
+	gauges   map[string]float64
+	counters map[string]int64
+}
+
+func (t *tempStorageForSaving) UpdateGauge(name string, value float64) {
+	// Not used for saving
+}
+
+func (t *tempStorageForSaving) UpdateCounter(name string, value int64) {
+	// Not used for saving
+}
+
+func (t *tempStorageForSaving) GetGauge(name string) (float64, bool) {
+	val, ok := t.gauges[name]
+	return val, ok
+}
+
+func (t *tempStorageForSaving) GetCounter(name string) (int64, bool) {
+	val, ok := t.counters[name]
+	return val, ok
+}
+
+func (t *tempStorageForSaving) GetAll() (map[string]float64, map[string]int64) {
+	return t.gauges, t.counters
 }
