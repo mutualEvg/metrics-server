@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/mutualEvg/metrics-server/internal/models"
+	"github.com/mutualEvg/metrics-server/internal/retry"
 )
 
 const (
@@ -33,6 +35,7 @@ var (
 	reportInterval time.Duration
 	batchSize      int
 	pollCount      int64
+	retryConfig    retry.RetryConfig
 )
 
 // MetricsBatch holds a collection of metrics to send
@@ -169,6 +172,9 @@ func main() {
 
 	log.Printf("Agent starting with server=%s, poll=%v, report=%v, batch_size=%d",
 		serverAddress, pollInterval, reportInterval, batchSize)
+
+	// Initialize retry configuration
+	retryConfig = retry.DefaultConfig()
 
 	// --- Main program starts
 	var gauges sync.Map
@@ -315,45 +321,50 @@ func sendBatch(metrics []models.Metrics) error {
 		return nil // Don't send empty batches
 	}
 
-	// Marshal to JSON
-	jsonData, err := json.Marshal(metrics)
-	if err != nil {
-		return fmt.Errorf("failed to marshal metrics: %w", err)
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	// Compress with gzip
-	var compressedData bytes.Buffer
-	gzipWriter := gzip.NewWriter(&compressedData)
-	if _, err := gzipWriter.Write(jsonData); err != nil {
-		return fmt.Errorf("failed to compress data: %w", err)
-	}
-	if err := gzipWriter.Close(); err != nil {
-		return fmt.Errorf("failed to close gzip writer: %w", err)
-	}
+	return retry.Do(ctx, retryConfig, func() error {
+		// Marshal to JSON
+		jsonData, err := json.Marshal(metrics)
+		if err != nil {
+			return fmt.Errorf("failed to marshal metrics: %w", err)
+		}
 
-	// Create HTTP request
-	url := fmt.Sprintf("%s/updates/", serverAddress)
-	req, err := http.NewRequest("POST", url, &compressedData)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
+		// Compress with gzip
+		var compressedData bytes.Buffer
+		gzipWriter := gzip.NewWriter(&compressedData)
+		if _, err := gzipWriter.Write(jsonData); err != nil {
+			return fmt.Errorf("failed to compress data: %w", err)
+		}
+		if err := gzipWriter.Close(); err != nil {
+			return fmt.Errorf("failed to close gzip writer: %w", err)
+		}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Content-Encoding", "gzip")
+		// Create HTTP request
+		url := fmt.Sprintf("%s/updates/", serverAddress)
+		req, err := http.NewRequest("POST", url, &compressedData)
+		if err != nil {
+			return fmt.Errorf("failed to create request: %w", err)
+		}
 
-	// Send request
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Encoding", "gzip")
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("server returned status %d", resp.StatusCode)
-	}
+		// Send request
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return fmt.Errorf("failed to send request: %w", err)
+		}
+		defer resp.Body.Close()
 
-	return nil
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("server returned status %d", resp.StatusCode)
+		}
+
+		return nil
+	})
 }
 
 func reportMetricsIndividual(gauges *sync.Map) {
@@ -394,59 +405,64 @@ func sendMetric(client *http.Client, metricType, metricName, metricValue string)
 
 // sendMetricJSON sends metrics using the new JSON API with gzip compression
 func sendMetricJSON(client *http.Client, metricType, metricName string, gaugeValue float64, counterValue int64) {
-	var metric models.Metrics
-	metric.ID = metricName
-	metric.MType = metricType
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 
-	switch metricType {
-	case "gauge":
-		metric.Value = &gaugeValue
-	case "counter":
-		metric.Delta = &counterValue
-	default:
-		log.Printf("Unknown metric type: %s", metricType)
-		return
-	}
+	err := retry.Do(ctx, retryConfig, func() error {
+		var metric models.Metrics
+		metric.ID = metricName
+		metric.MType = metricType
 
-	jsonData, err := json.Marshal(metric)
+		switch metricType {
+		case "gauge":
+			metric.Value = &gaugeValue
+		case "counter":
+			metric.Delta = &counterValue
+		default:
+			return fmt.Errorf("unknown metric type: %s", metricType)
+		}
+
+		jsonData, err := json.Marshal(metric)
+		if err != nil {
+			return fmt.Errorf("failed to marshal JSON: %w", err)
+		}
+
+		// Compress the JSON data
+		var compressedData bytes.Buffer
+		gzipWriter := gzip.NewWriter(&compressedData)
+		_, err = gzipWriter.Write(jsonData)
+		if err != nil {
+			return fmt.Errorf("failed to compress data: %w", err)
+		}
+		err = gzipWriter.Close()
+		if err != nil {
+			return fmt.Errorf("failed to close gzip writer: %w", err)
+		}
+
+		url := fmt.Sprintf("%s/update/", serverAddress)
+		req, err := http.NewRequest(http.MethodPost, url, &compressedData)
+		if err != nil {
+			return fmt.Errorf("failed to create request: %w", err)
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Encoding", "gzip")
+		req.Header.Set("Accept-Encoding", "gzip")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return fmt.Errorf("failed to send metric: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("server returned non-OK status: %s", resp.Status)
+		}
+
+		return nil
+	})
+
 	if err != nil {
-		log.Printf("Failed to marshal JSON: %v", err)
-		return
-	}
-
-	// Compress the JSON data
-	var compressedData bytes.Buffer
-	gzipWriter := gzip.NewWriter(&compressedData)
-	_, err = gzipWriter.Write(jsonData)
-	if err != nil {
-		log.Printf("Failed to compress data: %v", err)
-		return
-	}
-	err = gzipWriter.Close()
-	if err != nil {
-		log.Printf("Failed to close gzip writer: %v", err)
-		return
-	}
-
-	url := fmt.Sprintf("%s/update/", serverAddress)
-	req, err := http.NewRequest(http.MethodPost, url, &compressedData)
-	if err != nil {
-		log.Printf("Failed to create request: %v", err)
-		return
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Content-Encoding", "gzip")
-	req.Header.Set("Accept-Encoding", "gzip")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Printf("Failed to send metric: %v", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("Server returned non-OK status: %s", resp.Status)
+		log.Printf("Failed to send metric %s after retries: %v", metricName, err)
 	}
 }

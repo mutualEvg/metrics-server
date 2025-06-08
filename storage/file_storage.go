@@ -1,10 +1,14 @@
 package storage
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/mutualEvg/metrics-server/internal/retry"
+	"github.com/rs/zerolog/log"
 )
 
 // FileStorage represents the data structure for JSON serialization
@@ -15,16 +19,18 @@ type FileStorage struct {
 
 // FileManager handles file operations for metrics storage
 type FileManager struct {
-	filePath string
-	storage  Storage
-	mu       sync.RWMutex
+	filePath    string
+	storage     Storage
+	mu          sync.RWMutex
+	retryConfig retry.RetryConfig
 }
 
 // NewFileManager creates a new file manager
 func NewFileManager(filePath string, storage Storage) *FileManager {
 	return &FileManager{
-		filePath: filePath,
-		storage:  storage,
+		filePath:    filePath,
+		storage:     storage,
+		retryConfig: retry.DefaultConfig(),
 	}
 }
 
@@ -35,24 +41,29 @@ func (fm *FileManager) SaveToFile() error {
 
 	gauges, counters := fm.storage.GetAll()
 
-	data := FileStorage{
-		Gauges:   gauges,
-		Counters: counters,
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-	jsonData, err := json.MarshalIndent(data, "", "  ")
-	if err != nil {
-		return err
-	}
+	return retry.Do(ctx, fm.retryConfig, func() error {
+		data := FileStorage{
+			Gauges:   gauges,
+			Counters: counters,
+		}
 
-	// Write to temporary file first, then rename for atomic operation
-	tempFile := fm.filePath + ".tmp"
-	err = os.WriteFile(tempFile, jsonData, 0644)
-	if err != nil {
-		return err
-	}
+		jsonData, err := json.MarshalIndent(data, "", "  ")
+		if err != nil {
+			return err
+		}
 
-	return os.Rename(tempFile, fm.filePath)
+		// Write to temporary file first, then rename for atomic operation
+		tempFile := fm.filePath + ".tmp"
+		err = os.WriteFile(tempFile, jsonData, 0644)
+		if err != nil {
+			return err
+		}
+
+		return os.Rename(tempFile, fm.filePath)
+	})
 }
 
 // SaveToFileWithData saves the provided data to file (used to avoid deadlocks)
@@ -60,24 +71,29 @@ func (fm *FileManager) SaveToFileWithData(gauges map[string]float64, counters ma
 	fm.mu.Lock()
 	defer fm.mu.Unlock()
 
-	data := FileStorage{
-		Gauges:   gauges,
-		Counters: counters,
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-	jsonData, err := json.MarshalIndent(data, "", "  ")
-	if err != nil {
-		return err
-	}
+	return retry.Do(ctx, fm.retryConfig, func() error {
+		data := FileStorage{
+			Gauges:   gauges,
+			Counters: counters,
+		}
 
-	// Write to temporary file first, then rename for atomic operation
-	tempFile := fm.filePath + ".tmp"
-	err = os.WriteFile(tempFile, jsonData, 0644)
-	if err != nil {
-		return err
-	}
+		jsonData, err := json.MarshalIndent(data, "", "  ")
+		if err != nil {
+			return err
+		}
 
-	return os.Rename(tempFile, fm.filePath)
+		// Write to temporary file first, then rename for atomic operation
+		tempFile := fm.filePath + ".tmp"
+		err = os.WriteFile(tempFile, jsonData, 0644)
+		if err != nil {
+			return err
+		}
+
+		return os.Rename(tempFile, fm.filePath)
+	})
 }
 
 // LoadFromFile loads metrics from file into storage
@@ -85,38 +101,43 @@ func (fm *FileManager) LoadFromFile(storage Storage) error {
 	fm.mu.RLock()
 	defer fm.mu.RUnlock()
 
-	data, err := os.ReadFile(fm.filePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// File doesn't exist, which is fine for first run
-			return nil
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	return retry.Do(ctx, fm.retryConfig, func() error {
+		data, err := os.ReadFile(fm.filePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				// File doesn't exist, which is fine for first run
+				return nil
+			}
+			return err
 		}
-		return err
-	}
 
-	var fileData FileStorage
-	err = json.Unmarshal(data, &fileData)
-	if err != nil {
-		return err
-	}
-
-	// Load gauges
-	for name, value := range fileData.Gauges {
-		storage.UpdateGauge(name, value)
-	}
-
-	// Load counters
-	for name, value := range fileData.Counters {
-		// For counters, we set the value directly rather than adding
-		// since we're restoring the exact state
-		if memStorage, ok := storage.(*MemStorage); ok {
-			memStorage.mu.Lock()
-			memStorage.counters[name] = value
-			memStorage.mu.Unlock()
+		var fileData FileStorage
+		err = json.Unmarshal(data, &fileData)
+		if err != nil {
+			return err
 		}
-	}
 
-	return nil
+		// Load gauges
+		for name, value := range fileData.Gauges {
+			storage.UpdateGauge(name, value)
+		}
+
+		// Load counters
+		for name, value := range fileData.Counters {
+			// For counters, we set the value directly rather than adding
+			// since we're restoring the exact state
+			if memStorage, ok := storage.(*MemStorage); ok {
+				memStorage.mu.Lock()
+				memStorage.counters[name] = value
+				memStorage.mu.Unlock()
+			}
+		}
+
+		return nil
+	})
 }
 
 // FileExists checks if the storage file exists
@@ -175,8 +196,7 @@ func (ps *PeriodicSaver) Start() {
 			select {
 			case <-ticker.C:
 				if err := ps.fileManager.SaveToFile(); err != nil {
-					// Log error but continue running
-					// In a real application, you might want to use a proper logger
+					log.Error().Err(err).Msg("Failed to save metrics to file during periodic save")
 					continue
 				}
 			case <-ps.stopChan:

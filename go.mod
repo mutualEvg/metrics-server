@@ -4,6 +4,7 @@ go 1.23.0
 
 require (
 	github.com/go-chi/chi/v5 v5.2.1
+	github.com/jackc/pgerrcode v0.0.0-20240316143900-6e2875d9b438
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/lib/pq v1.10.9
 	github.com/rs/zerolog v1.34.0

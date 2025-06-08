@@ -2,35 +2,51 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
 	"github.com/mutualEvg/metrics-server/internal/models"
+	"github.com/mutualEvg/metrics-server/internal/retry"
 	"github.com/rs/zerolog/log"
 )
 
 type DBStorage struct {
-	db *sqlx.DB
-	mu sync.RWMutex
+	db          *sqlx.DB
+	mu          sync.RWMutex
+	retryConfig retry.RetryConfig
 }
 
 // NewDBStorage creates a new database storage instance
 func NewDBStorage(dsn string) (*DBStorage, error) {
-	db, err := sqlx.Connect("postgres", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to database: %w", err)
+	storage := &DBStorage{
+		retryConfig: retry.DefaultConfig(),
 	}
 
-	storage := &DBStorage{
-		db: db,
+	// Connect to database with retry logic
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	err := retry.Do(ctx, storage.retryConfig, func() error {
+		db, err := sqlx.Connect("postgres", dsn)
+		if err != nil {
+			return fmt.Errorf("failed to connect to database: %w", err)
+		}
+		storage.db = db
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
 	}
 
 	// Create tables if they don't exist
 	if err := storage.createTables(); err != nil {
-		db.Close()
+		storage.db.Close()
 		return nil, fmt.Errorf("failed to create tables: %w", err)
 	}
 
@@ -53,8 +69,15 @@ func (ds *DBStorage) createTables() error {
 		)`,
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	for _, query := range queries {
-		if _, err := ds.db.Exec(query); err != nil {
+		err := retry.Do(ctx, ds.retryConfig, func() error {
+			_, err := ds.db.Exec(query)
+			return err
+		})
+		if err != nil {
 			return fmt.Errorf("failed to execute query %s: %w", query, err)
 		}
 	}
@@ -72,13 +95,21 @@ func (ds *DBStorage) UpdateGauge(name string, value float64) {
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	query := `INSERT INTO gauges (name, value, updated_at) 
 			  VALUES ($1, $2, CURRENT_TIMESTAMP) 
 			  ON CONFLICT (name) 
 			  DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`
 
-	if _, err := ds.db.Exec(query, name, value); err != nil {
-		log.Error().Err(err).Str("name", name).Float64("value", value).Msg("Failed to update gauge in database")
+	err := retry.Do(ctx, ds.retryConfig, func() error {
+		_, err := ds.db.Exec(query, name, value)
+		return err
+	})
+
+	if err != nil {
+		log.Error().Err(err).Str("name", name).Float64("value", value).Msg("Failed to update gauge in database after retries")
 		return
 	}
 
@@ -95,27 +126,34 @@ func (ds *DBStorage) UpdateCounter(name string, value int64) {
 		return
 	}
 
-	// First try to get existing value
-	var currentValue int64
-	err := ds.db.Get(&currentValue, "SELECT value FROM counters WHERE name = $1", name)
-	if err != nil && err != sql.ErrNoRows {
-		log.Error().Err(err).Str("name", name).Int64("value", value).Msg("Failed to get counter from database")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := retry.Do(ctx, ds.retryConfig, func() error {
+		// First try to get existing value
+		var currentValue int64
+		err := ds.db.Get(&currentValue, "SELECT value FROM counters WHERE name = $1", name)
+		if err != nil && err != sql.ErrNoRows {
+			return fmt.Errorf("failed to get counter from database: %w", err)
+		}
+
+		newValue := currentValue + value
+
+		query := `INSERT INTO counters (name, value, updated_at) 
+				  VALUES ($1, $2, CURRENT_TIMESTAMP) 
+				  ON CONFLICT (name) 
+				  DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`
+
+		_, err = ds.db.Exec(query, name, newValue)
+		return err
+	})
+
+	if err != nil {
+		log.Error().Err(err).Str("name", name).Int64("value", value).Msg("Failed to update counter in database after retries")
 		return
 	}
 
-	newValue := currentValue + value
-
-	query := `INSERT INTO counters (name, value, updated_at) 
-			  VALUES ($1, $2, CURRENT_TIMESTAMP) 
-			  ON CONFLICT (name) 
-			  DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`
-
-	if _, err := ds.db.Exec(query, name, newValue); err != nil {
-		log.Error().Err(err).Str("name", name).Int64("value", value).Msg("Failed to update counter in database")
-		return
-	}
-
-	log.Debug().Str("name", name).Int64("value", newValue).Msg("Updated counter in database")
+	log.Debug().Str("name", name).Int64("value", value).Msg("Updated counter in database")
 }
 
 // GetGauge retrieves a gauge metric
@@ -128,13 +166,19 @@ func (ds *DBStorage) GetGauge(name string) (float64, bool) {
 		return 0, false
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	var value float64
-	err := ds.db.Get(&value, "SELECT value FROM gauges WHERE name = $1", name)
+	err := retry.Do(ctx, ds.retryConfig, func() error {
+		return ds.db.Get(&value, "SELECT value FROM gauges WHERE name = $1", name)
+	})
+
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return 0, false
 		}
-		log.Error().Err(err).Str("name", name).Msg("Failed to get gauge from database")
+		log.Error().Err(err).Str("name", name).Msg("Failed to get gauge from database after retries")
 		return 0, false
 	}
 
@@ -151,13 +195,19 @@ func (ds *DBStorage) GetCounter(name string) (int64, bool) {
 		return 0, false
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	var value int64
-	err := ds.db.Get(&value, "SELECT value FROM counters WHERE name = $1", name)
+	err := retry.Do(ctx, ds.retryConfig, func() error {
+		return ds.db.Get(&value, "SELECT value FROM counters WHERE name = $1", name)
+	})
+
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return 0, false
 		}
-		log.Error().Err(err).Str("name", name).Msg("Failed to get counter from database")
+		log.Error().Err(err).Str("name", name).Msg("Failed to get counter from database after retries")
 		return 0, false
 	}
 
@@ -177,52 +227,58 @@ func (ds *DBStorage) GetAll() (map[string]float64, map[string]int64) {
 		return gauges, counters
 	}
 
-	// Get all gauges
-	rows, err := ds.db.Query("SELECT name, value FROM gauges")
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to get gauges from database")
-		return gauges, counters
-	}
-	defer rows.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-	for rows.Next() {
-		var name string
-		var value float64
-		if err := rows.Scan(&name, &value); err != nil {
-			log.Error().Err(err).Msg("Failed to scan gauge row")
-			continue
+	// Get all gauges with retry
+	err := retry.Do(ctx, ds.retryConfig, func() error {
+		rows, err := ds.db.Query("SELECT name, value FROM gauges")
+		if err != nil {
+			return err
 		}
-		gauges[name] = value
-	}
+		defer rows.Close()
 
-	// Check for errors from iterating over rows
-	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Msg("Error occurred during gauge rows iteration")
-		return gauges, counters
-	}
-
-	// Get all counters
-	rows, err = ds.db.Query("SELECT name, value FROM counters")
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to get counters from database")
-		return gauges, counters
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var name string
-		var value int64
-		if err := rows.Scan(&name, &value); err != nil {
-			log.Error().Err(err).Msg("Failed to scan counter row")
-			continue
+		for rows.Next() {
+			var name string
+			var value float64
+			if err := rows.Scan(&name, &value); err != nil {
+				log.Error().Err(err).Msg("Failed to scan gauge row")
+				continue
+			}
+			gauges[name] = value
 		}
-		counters[name] = value
+
+		return rows.Err()
+	})
+
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to get gauges from database after retries")
+		return gauges, counters
 	}
 
-	// Check for errors from iterating over rows
-	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Msg("Error occurred during counter rows iteration")
-		return gauges, counters
+	// Get all counters with retry
+	err = retry.Do(ctx, ds.retryConfig, func() error {
+		rows, err := ds.db.Query("SELECT name, value FROM counters")
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var name string
+			var value int64
+			if err := rows.Scan(&name, &value); err != nil {
+				log.Error().Err(err).Msg("Failed to scan counter row")
+				continue
+			}
+			counters[name] = value
+		}
+
+		return rows.Err()
+	})
+
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to get counters from database after retries")
 	}
 
 	return gauges, counters
@@ -233,7 +289,13 @@ func (ds *DBStorage) Ping() error {
 	if ds.db == nil {
 		return fmt.Errorf("database connection is not initialized")
 	}
-	return ds.db.Ping()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	return retry.Do(ctx, ds.retryConfig, func() error {
+		return ds.db.Ping()
+	})
 }
 
 // Close closes the database connection
@@ -250,71 +312,75 @@ func (ds *DBStorage) UpdateBatch(metrics []models.Metrics) error {
 		return fmt.Errorf("database connection is nil")
 	}
 
-	// Start a transaction
-	tx, err := ds.db.Beginx()
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback() // Will be ignored if tx.Commit() succeeds
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 
-	ds.mu.Lock()
-	defer ds.mu.Unlock()
+	return retry.Do(ctx, ds.retryConfig, func() error {
+		// Start a transaction
+		tx, err := ds.db.Beginx()
+		if err != nil {
+			return fmt.Errorf("failed to begin transaction: %w", err)
+		}
+		defer tx.Rollback() // Will be ignored if tx.Commit() succeeds
 
-	// Process each metric in the transaction
-	for _, metric := range metrics {
-		// Validate required fields
-		if metric.ID == "" || metric.MType == "" {
-			return fmt.Errorf("metric ID and type are required")
+		ds.mu.Lock()
+		defer ds.mu.Unlock()
+
+		// Process each metric in the transaction
+		for _, metric := range metrics {
+			// Validate required fields
+			if metric.ID == "" || metric.MType == "" {
+				return fmt.Errorf("metric ID and type are required")
+			}
+
+			switch metric.MType {
+			case "gauge":
+				if metric.Value == nil {
+					return fmt.Errorf("gauge value is required for metric %s", metric.ID)
+				}
+
+				query := `INSERT INTO gauges (name, value, updated_at) 
+						  VALUES ($1, $2, CURRENT_TIMESTAMP) 
+						  ON CONFLICT (name) 
+						  DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`
+
+				if _, err := tx.Exec(query, metric.ID, *metric.Value); err != nil {
+					return fmt.Errorf("failed to update gauge %s: %w", metric.ID, err)
+				}
+
+			case "counter":
+				if metric.Delta == nil {
+					return fmt.Errorf("counter delta is required for metric %s", metric.ID)
+				}
+
+				// Get current value within transaction
+				var currentValue int64
+				err := tx.Get(&currentValue, "SELECT value FROM counters WHERE name = $1", metric.ID)
+				if err != nil && err != sql.ErrNoRows {
+					return fmt.Errorf("failed to get current counter value for %s: %w", metric.ID, err)
+				}
+
+				newValue := currentValue + *metric.Delta
+
+				query := `INSERT INTO counters (name, value, updated_at) 
+						  VALUES ($1, $2, CURRENT_TIMESTAMP) 
+						  ON CONFLICT (name) 
+						  DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`
+
+				if _, err := tx.Exec(query, metric.ID, newValue); err != nil {
+					return fmt.Errorf("failed to update counter %s: %w", metric.ID, err)
+				}
+
+			default:
+				return fmt.Errorf("unknown metric type: %s", metric.MType)
+			}
 		}
 
-		switch metric.MType {
-		case "gauge":
-			if metric.Value == nil {
-				return fmt.Errorf("gauge value is required for metric %s", metric.ID)
-			}
-
-			query := `INSERT INTO gauges (name, value, updated_at) 
-					  VALUES ($1, $2, CURRENT_TIMESTAMP) 
-					  ON CONFLICT (name) 
-					  DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`
-
-			if _, err := tx.Exec(query, metric.ID, *metric.Value); err != nil {
-				return fmt.Errorf("failed to update gauge %s: %w", metric.ID, err)
-			}
-
-		case "counter":
-			if metric.Delta == nil {
-				return fmt.Errorf("counter delta is required for metric %s", metric.ID)
-			}
-
-			// Get current value within transaction
-			var currentValue int64
-			err := tx.Get(&currentValue, "SELECT value FROM counters WHERE name = $1", metric.ID)
-			if err != nil && err != sql.ErrNoRows {
-				return fmt.Errorf("failed to get current counter value for %s: %w", metric.ID, err)
-			}
-
-			newValue := currentValue + *metric.Delta
-
-			query := `INSERT INTO counters (name, value, updated_at) 
-					  VALUES ($1, $2, CURRENT_TIMESTAMP) 
-					  ON CONFLICT (name) 
-					  DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`
-
-			if _, err := tx.Exec(query, metric.ID, newValue); err != nil {
-				return fmt.Errorf("failed to update counter %s: %w", metric.ID, err)
-			}
-
-		default:
-			return fmt.Errorf("unknown metric type: %s", metric.MType)
+		// Commit the transaction
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("failed to commit transaction: %w", err)
 		}
-	}
 
-	// Commit the transaction
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	log.Debug().Int("count", len(metrics)).Msg("Successfully processed batch update")
-	return nil
+		return nil
+	})
 }
