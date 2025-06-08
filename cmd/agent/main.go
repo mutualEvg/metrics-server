@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -13,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mutualEvg/metrics-server/internal/models"
 )
 
 const (
@@ -197,11 +202,11 @@ func reportMetrics(gauges *sync.Map) {
 	gauges.Range(func(key, value any) bool {
 		name, _ := key.(string)
 		val, _ := value.(float64)
-		sendMetric(client, "gauge", name, fmt.Sprintf("%f", val))
+		sendMetricJSON(client, "gauge", name, val, 0)
 		return true
 	})
 
-	sendMetric(client, "counter", "PollCount", strconv.FormatInt(pollCount, 10))
+	sendMetricJSON(client, "counter", "PollCount", 0, pollCount)
 }
 
 func sendMetric(client *http.Client, metricType, metricName, metricValue string) {
@@ -214,6 +219,65 @@ func sendMetric(client *http.Client, metricType, metricName, metricValue string)
 	}
 
 	req.Header.Set("Content-Type", "text/plain")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("Failed to send metric: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Server returned non-OK status: %s", resp.Status)
+	}
+}
+
+// sendMetricJSON sends metrics using the new JSON API with gzip compression
+func sendMetricJSON(client *http.Client, metricType, metricName string, gaugeValue float64, counterValue int64) {
+	var metric models.Metrics
+	metric.ID = metricName
+	metric.MType = metricType
+
+	switch metricType {
+	case "gauge":
+		metric.Value = &gaugeValue
+	case "counter":
+		metric.Delta = &counterValue
+	default:
+		log.Printf("Unknown metric type: %s", metricType)
+		return
+	}
+
+	jsonData, err := json.Marshal(metric)
+	if err != nil {
+		log.Printf("Failed to marshal JSON: %v", err)
+		return
+	}
+
+	// Compress the JSON data
+	var compressedData bytes.Buffer
+	gzipWriter := gzip.NewWriter(&compressedData)
+	_, err = gzipWriter.Write(jsonData)
+	if err != nil {
+		log.Printf("Failed to compress data: %v", err)
+		return
+	}
+	err = gzipWriter.Close()
+	if err != nil {
+		log.Printf("Failed to close gzip writer: %v", err)
+		return
+	}
+
+	url := fmt.Sprintf("%s/update/", serverAddress)
+	req, err := http.NewRequest(http.MethodPost, url, &compressedData)
+	if err != nil {
+		log.Printf("Failed to create request: %v", err)
+		return
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set("Accept-Encoding", "gzip")
 
 	resp, err := client.Do(req)
 	if err != nil {

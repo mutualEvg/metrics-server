@@ -2,14 +2,26 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"syscall"
+
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/mutualEvg/metrics-server/config"
+	gzipmw "github.com/mutualEvg/metrics-server/internal/middleware"
+	"github.com/mutualEvg/metrics-server/internal/models"
 	"github.com/mutualEvg/metrics-server/storage"
-	"log"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
+
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -21,16 +33,110 @@ func main() {
 	cfg := config.Load()
 	memStorage := storage.NewMemStorage()
 
+	// Setup zerolog
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+
+	// Setup file storage
+	fileManager := storage.NewFileManager(cfg.FileStoragePath, memStorage)
+
+	// Configure synchronous saving if store interval is 0
+	syncSave := cfg.StoreInterval == 0
+	memStorage.SetFileManager(fileManager, syncSave)
+
+	// Restore data if configured
+	if cfg.Restore {
+		if err := fileManager.LoadFromFile(memStorage); err != nil {
+			log.Error().Err(err).Msg("Failed to restore data from file")
+		} else {
+			log.Info().Str("file", cfg.FileStoragePath).Msg("Data restored from file")
+		}
+	}
+
+	// Setup periodic saving if not synchronous
+	var periodicSaver *storage.PeriodicSaver
+	if !syncSave {
+		periodicSaver = storage.NewPeriodicSaver(fileManager, memStorage, cfg.StoreInterval)
+		periodicSaver.Start()
+		log.Info().Dur("interval", cfg.StoreInterval).Msg("Started periodic saving")
+	} else {
+		log.Info().Msg("Synchronous saving enabled")
+	}
+
 	r := chi.NewRouter()
+
+	// Add middleware
+	r.Use(loggingMiddleware)
+	r.Use(gzipmw.GzipMiddleware)
+
+	// Legacy URL-based API
 	r.Post("/update/{type}/{name}/{value}", updateHandler(memStorage))
 	r.Get("/value/{type}/{name}", valueHandler(memStorage))
+
+	// New JSON API
+	r.Post("/update/", updateJSONHandler(memStorage))
+	r.Post("/value/", valueJSONHandler(memStorage))
+
 	r.Get("/", rootHandler(memStorage))
 
-	fmt.Printf("Server running at %s\n", cfg.ServerAddress)
-	// this fixes => Server failed: listen tcp: address http://localhost:8080: too many colons in address
-	if err := http.ListenAndServe(strings.TrimPrefix(strings.TrimPrefix(cfg.ServerAddress, "http://"), "https://"), r); err != nil {
-		log.Fatalf("Server failed: %v", err)
+	addr := strings.TrimPrefix(cfg.ServerAddress, "http://")
+	addr = strings.TrimPrefix(addr, "https://")
+
+	// Setup graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	server := &http.Server{
+		Addr:    addr,
+		Handler: r,
 	}
+
+	// Start server in a goroutine
+	go func() {
+		fmt.Printf("Server running at %s\n", cfg.ServerAddress)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal().Err(err).Msg("Server failed")
+		}
+	}()
+
+	// Wait for shutdown signal
+	<-sigChan
+	log.Info().Msg("Shutdown signal received")
+
+	// Stop periodic saving
+	if periodicSaver != nil {
+		periodicSaver.Stop()
+		log.Info().Msg("Stopped periodic saving")
+	}
+
+	// Save final state
+	if err := fileManager.SaveToFile(); err != nil {
+		log.Error().Err(err).Msg("Failed to save final state")
+	} else {
+		log.Info().Str("file", cfg.FileStoragePath).Msg("Final state saved")
+	}
+
+	log.Info().Msg("Server shutdown complete")
+}
+
+func loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+
+		// Wrap the ResponseWriter to capture status and size
+		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+
+		next.ServeHTTP(ww, r)
+
+		duration := time.Since(start)
+
+		log.Info().
+			Str("method", r.Method).
+			Str("uri", r.RequestURI).
+			Int("status", ww.Status()).
+			Int("size", ww.BytesWritten()).
+			Dur("duration", duration).
+			Msg("handled request")
+	})
 }
 
 func updateHandler(s storage.Storage) http.HandlerFunc {
@@ -98,5 +204,136 @@ func rootHandler(s storage.Storage) http.HandlerFunc {
 			fmt.Fprintf(w, "<li>%s (counter): %d</li>", k, v)
 		}
 		w.Write([]byte("</ul></body></html>"))
+	}
+}
+
+// updateJSONHandler handles POST /update/ with JSON body
+func updateJSONHandler(s storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Content-Type") != "application/json" {
+			http.Error(w, "Content-Type must be application/json", http.StatusBadRequest)
+			return
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read request body", http.StatusBadRequest)
+			return
+		}
+
+		var metric models.Metrics
+		if err := json.Unmarshal(body, &metric); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		// Validate required fields
+		if metric.ID == "" || metric.MType == "" {
+			http.Error(w, "ID and MType are required", http.StatusBadRequest)
+			return
+		}
+
+		switch metric.MType {
+		case GaugeType:
+			if metric.Value == nil {
+				http.Error(w, "Value is required for gauge metrics", http.StatusBadRequest)
+				return
+			}
+			s.UpdateGauge(metric.ID, *metric.Value)
+			// Return the updated metric
+			response := models.Metrics{
+				ID:    metric.ID,
+				MType: metric.MType,
+				Value: metric.Value,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(response)
+
+		case CounterType:
+			if metric.Delta == nil {
+				http.Error(w, "Delta is required for counter metrics", http.StatusBadRequest)
+				return
+			}
+			s.UpdateCounter(metric.ID, *metric.Delta)
+			// Get the updated value from storage
+			if updatedValue, ok := s.GetCounter(metric.ID); ok {
+				response := models.Metrics{
+					ID:    metric.ID,
+					MType: metric.MType,
+					Delta: &updatedValue,
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(response)
+			} else {
+				http.Error(w, "Failed to retrieve updated counter value", http.StatusInternalServerError)
+				return
+			}
+
+		default:
+			http.Error(w, "Unknown metric type", http.StatusBadRequest)
+			return
+		}
+	}
+}
+
+// valueJSONHandler handles POST /value/ with JSON body
+func valueJSONHandler(s storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Content-Type") != "application/json" {
+			http.Error(w, "Content-Type must be application/json", http.StatusBadRequest)
+			return
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read request body", http.StatusBadRequest)
+			return
+		}
+
+		var metric models.Metrics
+		if err := json.Unmarshal(body, &metric); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		// Validate required fields
+		if metric.ID == "" || metric.MType == "" {
+			http.Error(w, "ID and MType are required", http.StatusBadRequest)
+			return
+		}
+
+		switch metric.MType {
+		case GaugeType:
+			if value, ok := s.GetGauge(metric.ID); ok {
+				response := models.Metrics{
+					ID:    metric.ID,
+					MType: metric.MType,
+					Value: &value,
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(response)
+			} else {
+				http.Error(w, "Metric not found", http.StatusNotFound)
+				return
+			}
+
+		case CounterType:
+			if value, ok := s.GetCounter(metric.ID); ok {
+				response := models.Metrics{
+					ID:    metric.ID,
+					MType: metric.MType,
+					Delta: &value,
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(response)
+			} else {
+				http.Error(w, "Metric not found", http.StatusNotFound)
+				return
+			}
+
+		default:
+			http.Error(w, "Unknown metric type", http.StatusBadRequest)
+			return
+		}
 	}
 }
