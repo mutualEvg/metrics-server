@@ -16,6 +16,7 @@ type Config struct {
 	StoreInterval   time.Duration
 	FileStoragePath string
 	Restore         bool
+	DatabaseDSN     string
 }
 
 const (
@@ -25,6 +26,7 @@ const (
 	defaultStoreSeconds    = 300
 	defaultFileStoragePath = "/tmp/metrics-db.json"
 	defaultRestore         = true
+	defaultDatabaseDSN     = ""
 )
 
 func Load() *Config {
@@ -35,6 +37,7 @@ func Load() *Config {
 	flagStoreInterval := flag.Int("i", 0, "Store interval in seconds (0 for synchronous)")
 	flagFileStoragePath := flag.String("f", "", "File storage path")
 	flagRestore := flag.Bool("restore", false, "Restore previously stored values")
+	flagDatabaseDSN := flag.String("d", "", "Database connection string")
 	flag.Parse()
 
 	addr := resolveString("ADDRESS", *flagAddress, defaultServerAddress)
@@ -43,6 +46,7 @@ func Load() *Config {
 	storeInterval := resolveInt("STORE_INTERVAL", *flagStoreInterval, defaultStoreSeconds)
 	fileStoragePath := resolveString("FILE_STORAGE_PATH", *flagFileStoragePath, defaultFileStoragePath)
 	restore := resolveBool("RESTORE", *flagRestore, defaultRestore)
+	databaseDSN := resolveString("DATABASE_DSN", *flagDatabaseDSN, defaultDatabaseDSN)
 
 	return &Config{
 		ServerAddress:   addr,
@@ -51,6 +55,7 @@ func Load() *Config {
 		StoreInterval:   time.Duration(storeInterval) * time.Second,
 		FileStoragePath: fileStoragePath,
 		Restore:         restore,
+		DatabaseDSN:     databaseDSN,
 	}
 }
 
