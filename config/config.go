@@ -34,16 +34,15 @@ func Load() *Config {
 	// Flags
 	flagAddress := flag.String("a", "", "HTTP server address")
 	flagPoll := flag.Int("p", 0, "Poll interval in seconds")
-	flagReport := flag.Int("r", 0, "Report interval in seconds")
 	flagStoreInterval := flag.Int("i", 0, "Store interval in seconds (0 for synchronous)")
 	flagFileStoragePath := flag.String("f", "", "File storage path")
-	flagRestore := flag.Bool("restore", false, "Restore previously stored values")
+	flagRestore := flag.Bool("r", false, "Restore previously stored values")
 	flagDatabaseDSN := flag.String("d", "", "Database connection string")
 	flag.Parse()
 
 	addr := resolveString("ADDRESS", *flagAddress, defaultServerAddress)
 	poll := resolveInt("POLL_INTERVAL", *flagPoll, defaultPollSeconds)
-	report := resolveInt("REPORT_INTERVAL", *flagReport, defaultReportSeconds)
+	report := resolveInt("REPORT_INTERVAL", 0, defaultReportSeconds) // No flag for report interval
 	storeInterval := resolveInt("STORE_INTERVAL", *flagStoreInterval, defaultStoreSeconds)
 	databaseDSN := resolveString("DATABASE_DSN", *flagDatabaseDSN, defaultDatabaseDSN)
 	restore := resolveBool("RESTORE", *flagRestore, defaultRestore)
