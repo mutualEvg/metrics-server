@@ -256,18 +256,17 @@ func updateJSONHandler(s storage.Storage) http.HandlerFunc {
 			}
 			s.UpdateCounter(metric.ID, *metric.Delta)
 			// Get the updated value from storage
-			if updatedValue, ok := s.GetCounter(metric.ID); ok {
-				response := models.Metrics{
-					ID:    metric.ID,
-					MType: metric.MType,
-					Delta: &updatedValue,
-				}
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(response)
-			} else {
-				http.Error(w, "Failed to retrieve updated counter value", http.StatusInternalServerError)
+			if updatedValue, ok := s.GetCounter(metric.ID); !ok {
+			        http.Error(w, "Failed to retrieve updated counter value", http.StatusInternalServerError)
 				return
 			}
+		        response := models.Metrics{
+			        ID:    metric.ID,
+			        MType: metric.MType,
+			        Delta: &updatedValue,
+		        }
+		        w.Header().Set("Content-Type", "application/json")
+		        json.NewEncoder(w).Encode(response)
 
 		default:
 			http.Error(w, "Unknown metric type", http.StatusBadRequest)
