@@ -201,6 +201,12 @@ func (ds *DBStorage) GetAll() (map[string]float64, map[string]int64) {
 		gauges[name] = value
 	}
 
+	// Check for errors from iterating over rows
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("Error occurred during gauge rows iteration, using fallback")
+		return ds.fallback.GetAll()
+	}
+
 	// Get all counters
 	rows, err = ds.db.Query("SELECT name, value FROM counters")
 	if err != nil {
@@ -224,6 +230,24 @@ func (ds *DBStorage) GetAll() (map[string]float64, map[string]int64) {
 			continue
 		}
 		counters[name] = value
+	}
+
+	// Check for errors from iterating over rows
+	if err := rows.Err(); err != nil {
+		log.Error().Err(err).Msg("Error occurred during counter rows iteration, using fallback")
+		fallbackGauges, fallbackCounters := ds.fallback.GetAll()
+		// Merge with what we got from gauges and counters so far
+		for k, v := range fallbackGauges {
+			if _, exists := gauges[k]; !exists {
+				gauges[k] = v
+			}
+		}
+		for k, v := range fallbackCounters {
+			if _, exists := counters[k]; !exists {
+				counters[k] = v
+			}
+		}
+		return gauges, counters
 	}
 
 	return gauges, counters
