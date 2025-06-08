@@ -8,6 +8,7 @@ import (
 
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
+	"github.com/mutualEvg/metrics-server/internal/models"
 	"github.com/rs/zerolog/log"
 )
 
@@ -240,5 +241,80 @@ func (ds *DBStorage) Close() error {
 	if ds.db != nil {
 		return ds.db.Close()
 	}
+	return nil
+}
+
+// UpdateBatch processes multiple metrics in a single database transaction
+func (ds *DBStorage) UpdateBatch(metrics []models.Metrics) error {
+	if ds.db == nil {
+		return fmt.Errorf("database connection is nil")
+	}
+
+	// Start a transaction
+	tx, err := ds.db.Beginx()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback() // Will be ignored if tx.Commit() succeeds
+
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+
+	// Process each metric in the transaction
+	for _, metric := range metrics {
+		// Validate required fields
+		if metric.ID == "" || metric.MType == "" {
+			return fmt.Errorf("metric ID and type are required")
+		}
+
+		switch metric.MType {
+		case "gauge":
+			if metric.Value == nil {
+				return fmt.Errorf("gauge value is required for metric %s", metric.ID)
+			}
+
+			query := `INSERT INTO gauges (name, value, updated_at) 
+					  VALUES ($1, $2, CURRENT_TIMESTAMP) 
+					  ON CONFLICT (name) 
+					  DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`
+
+			if _, err := tx.Exec(query, metric.ID, *metric.Value); err != nil {
+				return fmt.Errorf("failed to update gauge %s: %w", metric.ID, err)
+			}
+
+		case "counter":
+			if metric.Delta == nil {
+				return fmt.Errorf("counter delta is required for metric %s", metric.ID)
+			}
+
+			// Get current value within transaction
+			var currentValue int64
+			err := tx.Get(&currentValue, "SELECT value FROM counters WHERE name = $1", metric.ID)
+			if err != nil && err != sql.ErrNoRows {
+				return fmt.Errorf("failed to get current counter value for %s: %w", metric.ID, err)
+			}
+
+			newValue := currentValue + *metric.Delta
+
+			query := `INSERT INTO counters (name, value, updated_at) 
+					  VALUES ($1, $2, CURRENT_TIMESTAMP) 
+					  ON CONFLICT (name) 
+					  DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`
+
+			if _, err := tx.Exec(query, metric.ID, newValue); err != nil {
+				return fmt.Errorf("failed to update counter %s: %w", metric.ID, err)
+			}
+
+		default:
+			return fmt.Errorf("unknown metric type: %s", metric.MType)
+		}
+	}
+
+	// Commit the transaction
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	log.Debug().Int("count", len(metrics)).Msg("Successfully processed batch update")
 	return nil
 }
