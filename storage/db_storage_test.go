@@ -12,7 +12,7 @@ import (
 // Skip this test if no database is available
 func TestDBStorageBasicOperations(t *testing.T) {
 	// This is a basic test that can be run if a test database is available
-	// For now, we'll test the fallback functionality
+	// For now, we'll test the connection failure behavior
 	dsn := "postgres://invalid:invalid@localhost/invalid?sslmode=disable"
 
 	// This should fail to connect, which is expected for this test
@@ -26,32 +26,36 @@ func TestDBStorageBasicOperations(t *testing.T) {
 func TestDBStorageInterface(t *testing.T) {
 	// Create a mock DBStorage to test interface compliance
 	dbStorage := &DBStorage{
-		db:       nil, // We won't actually use the db for this test
-		fallback: NewMemStorage(),
+		db: nil, // We won't actually use the db for this test
 	}
 
 	// Test that it implements the Storage interface
 	var _ Storage = dbStorage
 
-	// Test fallback operations when db is nil
+	// Test operations when db is nil (should handle gracefully)
 	dbStorage.UpdateGauge("test_gauge", 42.5)
 	dbStorage.UpdateCounter("test_counter", 10)
 
-	// These should work through the fallback
-	if val, ok := dbStorage.fallback.GetGauge("test_gauge"); !ok || val != 42.5 {
-		t.Errorf("Expected gauge value 42.5, got %f", val)
+	// These should return false/zero values when db is nil
+	if val, ok := dbStorage.GetGauge("test_gauge"); ok {
+		t.Errorf("Expected gauge not found, but got value %f", val)
 	}
 
-	if val, ok := dbStorage.fallback.GetCounter("test_counter"); !ok || val != 10 {
-		t.Errorf("Expected counter value 10, got %d", val)
+	if val, ok := dbStorage.GetCounter("test_counter"); ok {
+		t.Errorf("Expected counter not found, but got value %d", val)
+	}
+
+	// GetAll should return empty maps when db is nil
+	gauges, counters := dbStorage.GetAll()
+	if len(gauges) != 0 || len(counters) != 0 {
+		t.Error("Expected empty maps when database is not available")
 	}
 }
 
 // TestPingWithoutDB tests the Ping method when no database is connected
 func TestPingWithoutDB(t *testing.T) {
 	dbStorage := &DBStorage{
-		db:       nil,
-		fallback: NewMemStorage(),
+		db: nil,
 	}
 
 	err := dbStorage.Ping()
@@ -63,8 +67,7 @@ func TestPingWithoutDB(t *testing.T) {
 // TestCloseWithoutDB tests the Close method when no database is connected
 func TestCloseWithoutDB(t *testing.T) {
 	dbStorage := &DBStorage{
-		db:       nil,
-		fallback: NewMemStorage(),
+		db: nil,
 	}
 
 	err := dbStorage.Close()

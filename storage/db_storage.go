@@ -12,9 +12,8 @@ import (
 )
 
 type DBStorage struct {
-	db       *sqlx.DB
-	mu       sync.RWMutex
-	fallback *MemStorage // Fallback to memory storage if DB is unavailable
+	db *sqlx.DB
+	mu sync.RWMutex
 }
 
 // NewDBStorage creates a new database storage instance
@@ -25,8 +24,7 @@ func NewDBStorage(dsn string) (*DBStorage, error) {
 	}
 
 	storage := &DBStorage{
-		db:       db,
-		fallback: NewMemStorage(),
+		db: db,
 	}
 
 	// Create tables if they don't exist
@@ -68,9 +66,8 @@ func (ds *DBStorage) UpdateGauge(name string, value float64) {
 	ds.mu.Lock()
 	defer ds.mu.Unlock()
 
-	// If database is not available, use fallback
 	if ds.db == nil {
-		ds.fallback.UpdateGauge(name, value)
+		log.Error().Str("name", name).Float64("value", value).Msg("Database connection is nil, cannot update gauge")
 		return
 	}
 
@@ -80,8 +77,7 @@ func (ds *DBStorage) UpdateGauge(name string, value float64) {
 			  DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`
 
 	if _, err := ds.db.Exec(query, name, value); err != nil {
-		log.Error().Err(err).Str("name", name).Float64("value", value).Msg("Failed to update gauge in database, using fallback")
-		ds.fallback.UpdateGauge(name, value)
+		log.Error().Err(err).Str("name", name).Float64("value", value).Msg("Failed to update gauge in database")
 		return
 	}
 
@@ -93,9 +89,8 @@ func (ds *DBStorage) UpdateCounter(name string, value int64) {
 	ds.mu.Lock()
 	defer ds.mu.Unlock()
 
-	// If database is not available, use fallback
 	if ds.db == nil {
-		ds.fallback.UpdateCounter(name, value)
+		log.Error().Str("name", name).Int64("value", value).Msg("Database connection is nil, cannot update counter")
 		return
 	}
 
@@ -103,8 +98,7 @@ func (ds *DBStorage) UpdateCounter(name string, value int64) {
 	var currentValue int64
 	err := ds.db.Get(&currentValue, "SELECT value FROM counters WHERE name = $1", name)
 	if err != nil && err != sql.ErrNoRows {
-		log.Error().Err(err).Str("name", name).Int64("value", value).Msg("Failed to get counter from database, using fallback")
-		ds.fallback.UpdateCounter(name, value)
+		log.Error().Err(err).Str("name", name).Int64("value", value).Msg("Failed to get counter from database")
 		return
 	}
 
@@ -116,8 +110,7 @@ func (ds *DBStorage) UpdateCounter(name string, value int64) {
 			  DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP`
 
 	if _, err := ds.db.Exec(query, name, newValue); err != nil {
-		log.Error().Err(err).Str("name", name).Int64("value", value).Msg("Failed to update counter in database, using fallback")
-		ds.fallback.UpdateCounter(name, value)
+		log.Error().Err(err).Str("name", name).Int64("value", value).Msg("Failed to update counter in database")
 		return
 	}
 
@@ -129,9 +122,9 @@ func (ds *DBStorage) GetGauge(name string) (float64, bool) {
 	ds.mu.RLock()
 	defer ds.mu.RUnlock()
 
-	// If database is not available, use fallback
 	if ds.db == nil {
-		return ds.fallback.GetGauge(name)
+		log.Error().Str("name", name).Msg("Database connection is nil, cannot get gauge")
+		return 0, false
 	}
 
 	var value float64
@@ -140,8 +133,8 @@ func (ds *DBStorage) GetGauge(name string) (float64, bool) {
 		if err == sql.ErrNoRows {
 			return 0, false
 		}
-		log.Error().Err(err).Str("name", name).Msg("Failed to get gauge from database, trying fallback")
-		return ds.fallback.GetGauge(name)
+		log.Error().Err(err).Str("name", name).Msg("Failed to get gauge from database")
+		return 0, false
 	}
 
 	return value, true
@@ -152,9 +145,9 @@ func (ds *DBStorage) GetCounter(name string) (int64, bool) {
 	ds.mu.RLock()
 	defer ds.mu.RUnlock()
 
-	// If database is not available, use fallback
 	if ds.db == nil {
-		return ds.fallback.GetCounter(name)
+		log.Error().Str("name", name).Msg("Database connection is nil, cannot get counter")
+		return 0, false
 	}
 
 	var value int64
@@ -163,8 +156,8 @@ func (ds *DBStorage) GetCounter(name string) (int64, bool) {
 		if err == sql.ErrNoRows {
 			return 0, false
 		}
-		log.Error().Err(err).Str("name", name).Msg("Failed to get counter from database, trying fallback")
-		return ds.fallback.GetCounter(name)
+		log.Error().Err(err).Str("name", name).Msg("Failed to get counter from database")
+		return 0, false
 	}
 
 	return value, true
@@ -175,19 +168,19 @@ func (ds *DBStorage) GetAll() (map[string]float64, map[string]int64) {
 	ds.mu.RLock()
 	defer ds.mu.RUnlock()
 
-	// If database is not available, use fallback
-	if ds.db == nil {
-		return ds.fallback.GetAll()
-	}
-
 	gauges := make(map[string]float64)
 	counters := make(map[string]int64)
+
+	if ds.db == nil {
+		log.Error().Msg("Database connection is nil, cannot get all metrics")
+		return gauges, counters
+	}
 
 	// Get all gauges
 	rows, err := ds.db.Query("SELECT name, value FROM gauges")
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to get gauges from database, using fallback")
-		return ds.fallback.GetAll()
+		log.Error().Err(err).Msg("Failed to get gauges from database")
+		return gauges, counters
 	}
 	defer rows.Close()
 
@@ -203,22 +196,15 @@ func (ds *DBStorage) GetAll() (map[string]float64, map[string]int64) {
 
 	// Check for errors from iterating over rows
 	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Msg("Error occurred during gauge rows iteration, using fallback")
-		return ds.fallback.GetAll()
+		log.Error().Err(err).Msg("Error occurred during gauge rows iteration")
+		return gauges, counters
 	}
 
 	// Get all counters
 	rows, err = ds.db.Query("SELECT name, value FROM counters")
 	if err != nil {
-		log.Error().Err(err).Msg("Failed to get counters from database, using fallback")
-		fallbackGauges, fallbackCounters := ds.fallback.GetAll()
-		// Merge with what we got from gauges
-		for k, v := range fallbackGauges {
-			if _, exists := gauges[k]; !exists {
-				gauges[k] = v
-			}
-		}
-		return gauges, fallbackCounters
+		log.Error().Err(err).Msg("Failed to get counters from database")
+		return gauges, counters
 	}
 	defer rows.Close()
 
@@ -234,19 +220,7 @@ func (ds *DBStorage) GetAll() (map[string]float64, map[string]int64) {
 
 	// Check for errors from iterating over rows
 	if err := rows.Err(); err != nil {
-		log.Error().Err(err).Msg("Error occurred during counter rows iteration, using fallback")
-		fallbackGauges, fallbackCounters := ds.fallback.GetAll()
-		// Merge with what we got from gauges and counters so far
-		for k, v := range fallbackGauges {
-			if _, exists := gauges[k]; !exists {
-				gauges[k] = v
-			}
-		}
-		for k, v := range fallbackCounters {
-			if _, exists := counters[k]; !exists {
-				counters[k] = v
-			}
-		}
+		log.Error().Err(err).Msg("Error occurred during counter rows iteration")
 		return gauges, counters
 	}
 

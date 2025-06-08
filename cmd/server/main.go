@@ -35,21 +35,24 @@ func main() {
 	// Setup zerolog
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 
-	// Initialize storage based on configuration
+	// Initialize storage based on configuration priority:
+	// 1. Database storage (if DATABASE_DSN is provided)
+	// 2. File storage (if file storage is explicitly configured)
+	// 3. Memory storage (fallback)
 	var mainStorage storage.Storage
 	var dbStorage *storage.DBStorage
 	var err error
 
 	if cfg.DatabaseDSN != "" {
-		// Use database storage
+		// Priority 1: Use database storage
 		dbStorage, err = storage.NewDBStorage(cfg.DatabaseDSN)
 		if err != nil {
 			log.Fatal().Err(err).Msg("Failed to initialize database storage")
 		}
 		mainStorage = dbStorage
-		log.Info().Msg("Using database storage")
-	} else {
-		// Use memory storage with file persistence
+		log.Info().Msg("Using PostgreSQL database storage")
+	} else if cfg.UseFileStorage {
+		// Priority 2: Use file storage
 		memStorage := storage.NewMemStorage()
 		mainStorage = memStorage
 
@@ -94,7 +97,11 @@ func main() {
 			log.Info().Msg("Synchronous saving enabled")
 		}
 
-		log.Info().Msg("Using memory storage with file persistence")
+		log.Info().Str("file", cfg.FileStoragePath).Msg("Using file storage")
+	} else {
+		// Priority 3: Use pure memory storage
+		mainStorage = storage.NewMemStorage()
+		log.Info().Msg("Using in-memory storage (no persistence)")
 	}
 
 	r := chi.NewRouter()

@@ -17,6 +17,7 @@ type Config struct {
 	FileStoragePath string
 	Restore         bool
 	DatabaseDSN     string
+	UseFileStorage  bool // Indicates if file storage was explicitly configured
 }
 
 const (
@@ -44,9 +45,24 @@ func Load() *Config {
 	poll := resolveInt("POLL_INTERVAL", *flagPoll, defaultPollSeconds)
 	report := resolveInt("REPORT_INTERVAL", *flagReport, defaultReportSeconds)
 	storeInterval := resolveInt("STORE_INTERVAL", *flagStoreInterval, defaultStoreSeconds)
-	fileStoragePath := resolveString("FILE_STORAGE_PATH", *flagFileStoragePath, defaultFileStoragePath)
-	restore := resolveBool("RESTORE", *flagRestore, defaultRestore)
 	databaseDSN := resolveString("DATABASE_DSN", *flagDatabaseDSN, defaultDatabaseDSN)
+	restore := resolveBool("RESTORE", *flagRestore, defaultRestore)
+
+	// Determine if file storage is explicitly configured
+	var fileStoragePath string
+	var useFileStorage bool
+
+	if envPath := os.Getenv("FILE_STORAGE_PATH"); envPath != "" {
+		fileStoragePath = envPath
+		useFileStorage = true
+	} else if *flagFileStoragePath != "" {
+		fileStoragePath = *flagFileStoragePath
+		useFileStorage = true
+	} else {
+		// No explicit file storage configuration
+		fileStoragePath = defaultFileStoragePath
+		useFileStorage = false
+	}
 
 	return &Config{
 		ServerAddress:   addr,
@@ -56,6 +72,7 @@ func Load() *Config {
 		FileStoragePath: fileStoragePath,
 		Restore:         restore,
 		DatabaseDSN:     databaseDSN,
+		UseFileStorage:  useFileStorage,
 	}
 }
 
