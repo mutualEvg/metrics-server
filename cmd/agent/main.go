@@ -291,7 +291,7 @@ func reportMetricsBatch(gauges *sync.Map, batch *MetricsBatch) {
 
 	// Get all metrics and send as batch
 	metrics := batch.GetAndClear()
-	if metrics != nil && len(metrics) > 0 {
+	if len(metrics) > 0 {
 		if err := sendBatch(metrics); err != nil {
 			log.Printf("Failed to send batch: %v", err)
 			// Fallback to individual sending
