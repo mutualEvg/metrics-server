@@ -31,35 +31,70 @@ const (
 
 func main() {
 	cfg := config.Load()
-	memStorage := storage.NewMemStorage()
 
 	// Setup zerolog
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 
-	// Setup file storage
-	fileManager := storage.NewFileManager(cfg.FileStoragePath, memStorage)
+	// Initialize storage based on configuration
+	var mainStorage storage.Storage
+	var dbStorage *storage.DBStorage
+	var err error
 
-	// Configure synchronous saving if store interval is 0
-	syncSave := cfg.StoreInterval == 0
-	memStorage.SetFileManager(fileManager, syncSave)
-
-	// Restore data if configured
-	if cfg.Restore {
-		if err := fileManager.LoadFromFile(memStorage); err != nil {
-			log.Error().Err(err).Msg("Failed to restore data from file")
-		} else {
-			log.Info().Str("file", cfg.FileStoragePath).Msg("Data restored from file")
+	if cfg.DatabaseDSN != "" {
+		// Use database storage
+		dbStorage, err = storage.NewDBStorage(cfg.DatabaseDSN)
+		if err != nil {
+			log.Fatal().Err(err).Msg("Failed to initialize database storage")
 		}
-	}
-
-	// Setup periodic saving if not synchronous
-	var periodicSaver *storage.PeriodicSaver
-	if !syncSave {
-		periodicSaver = storage.NewPeriodicSaver(fileManager, memStorage, cfg.StoreInterval)
-		periodicSaver.Start()
-		log.Info().Dur("interval", cfg.StoreInterval).Msg("Started periodic saving")
+		mainStorage = dbStorage
+		log.Info().Msg("Using database storage")
 	} else {
-		log.Info().Msg("Synchronous saving enabled")
+		// Use memory storage with file persistence
+		memStorage := storage.NewMemStorage()
+		mainStorage = memStorage
+
+		// Setup file storage
+		fileManager := storage.NewFileManager(cfg.FileStoragePath, memStorage)
+
+		// Configure synchronous saving if store interval is 0
+		syncSave := cfg.StoreInterval == 0
+		memStorage.SetFileManager(fileManager, syncSave)
+
+		// Restore data if configured
+		if cfg.Restore {
+			if err := fileManager.LoadFromFile(memStorage); err != nil {
+				log.Error().Err(err).Msg("Failed to restore data from file")
+			} else {
+				log.Info().Str("file", cfg.FileStoragePath).Msg("Data restored from file")
+			}
+		}
+
+		// Setup periodic saving if not synchronous
+		var periodicSaver *storage.PeriodicSaver
+		if !syncSave {
+			periodicSaver = storage.NewPeriodicSaver(fileManager, memStorage, cfg.StoreInterval)
+			periodicSaver.Start()
+			log.Info().Dur("interval", cfg.StoreInterval).Msg("Started periodic saving")
+
+			// Setup graceful shutdown for periodic saver
+			defer func() {
+				if periodicSaver != nil {
+					periodicSaver.Stop()
+					log.Info().Msg("Stopped periodic saving")
+				}
+
+				// Save final state
+				if err := fileManager.SaveToFile(); err != nil {
+					log.Error().Err(err).Msg("Failed to save final state")
+				} else {
+					log.Info().Str("file", cfg.FileStoragePath).Msg("Final state saved")
+				}
+			}()
+		} else {
+			log.Info().Msg("Synchronous saving enabled")
+		}
+
+		log.Info().Msg("Using memory storage with file persistence")
 	}
 
 	r := chi.NewRouter()
@@ -68,15 +103,18 @@ func main() {
 	r.Use(loggingMiddleware)
 	r.Use(gzipmw.GzipMiddleware)
 
+	// Database ping handler
+	r.Get("/ping", pingHandler(dbStorage))
+
 	// Legacy URL-based API
-	r.Post("/update/{type}/{name}/{value}", updateHandler(memStorage))
-	r.Get("/value/{type}/{name}", valueHandler(memStorage))
+	r.Post("/update/{type}/{name}/{value}", updateHandler(mainStorage))
+	r.Get("/value/{type}/{name}", valueHandler(mainStorage))
 
 	// New JSON API
-	r.Post("/update/", updateJSONHandler(memStorage))
-	r.Post("/value/", valueJSONHandler(memStorage))
+	r.Post("/update/", updateJSONHandler(mainStorage))
+	r.Post("/value/", valueJSONHandler(mainStorage))
 
-	r.Get("/", rootHandler(memStorage))
+	r.Get("/", rootHandler(mainStorage))
 
 	addr := strings.TrimPrefix(cfg.ServerAddress, "http://")
 	addr = strings.TrimPrefix(addr, "https://")
@@ -102,20 +140,36 @@ func main() {
 	<-sigChan
 	log.Info().Msg("Shutdown signal received")
 
-	// Stop periodic saving
-	if periodicSaver != nil {
-		periodicSaver.Stop()
-		log.Info().Msg("Stopped periodic saving")
-	}
-
-	// Save final state
-	if err := fileManager.SaveToFile(); err != nil {
-		log.Error().Err(err).Msg("Failed to save final state")
-	} else {
-		log.Info().Str("file", cfg.FileStoragePath).Msg("Final state saved")
+	// Close database connection if using database storage
+	if dbStorage != nil {
+		if err := dbStorage.Close(); err != nil {
+			log.Error().Err(err).Msg("Failed to close database connection")
+		} else {
+			log.Info().Msg("Database connection closed")
+		}
 	}
 
 	log.Info().Msg("Server shutdown complete")
+}
+
+// pingHandler handles the /ping endpoint to check database connectivity
+func pingHandler(dbStorage *storage.DBStorage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if dbStorage == nil {
+			// No database configured
+			http.Error(w, "Database not configured", http.StatusInternalServerError)
+			return
+		}
+
+		if err := dbStorage.Ping(); err != nil {
+			log.Error().Err(err).Msg("Database ping failed")
+			http.Error(w, "Database connection failed", http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	}
 }
 
 func loggingMiddleware(next http.Handler) http.Handler {
