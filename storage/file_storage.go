@@ -16,18 +16,20 @@ type FileStorage struct {
 // FileManager handles file operations for metrics storage
 type FileManager struct {
 	filePath string
+	storage Storage
 	mu       sync.RWMutex
 }
 
 // NewFileManager creates a new file manager
-func NewFileManager(filePath string) *FileManager {
+func NewFileManager(filePath string, storage Storage) *FileManager {
 	return &FileManager{
 		filePath: filePath,
+		storage: storage,
 	}
 }
 
 // SaveToFile saves the current metrics to file
-func (fm *FileManager) SaveToFile(storage Storage) error {
+func (fm *FileManager) SaveToFile() error {
 	fm.mu.Lock()
 	defer fm.mu.Unlock()
 
