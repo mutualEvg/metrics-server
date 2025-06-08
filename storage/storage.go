@@ -103,12 +103,7 @@ func (ms *MemStorage) getAllInternal() (map[string]float64, map[string]int64) {
 func (ms *MemStorage) saveToFileInternal() {
 	if ms.fileManager != nil {
 		gauges, counters := ms.getAllInternal()
-		// Create a temporary storage interface for saving
-		tempStorage := &tempStorageForSaving{
-			gauges:   gauges,
-			counters: counters,
-		}
-		ms.fileManager.SaveToFile(tempStorage)
+		ms.fileManager.SaveToFileWithData(gauges, counters)
 	}
 }
 

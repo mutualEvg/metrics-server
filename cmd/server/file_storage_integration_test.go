@@ -21,7 +21,7 @@ func TestFileStorageIntegration(t *testing.T) {
 
 	// Create storage with file manager
 	memStorage := storage.NewMemStorage()
-	fileManager := storage.NewFileManager(filePath)
+	fileManager := storage.NewFileManager(filePath, memStorage)
 	memStorage.SetFileManager(fileManager, false) // Async saving
 
 	// Setup router
@@ -58,7 +58,7 @@ func TestFileStorageIntegration(t *testing.T) {
 	}
 
 	// Manually save to file
-	err := fileManager.SaveToFile(memStorage)
+	err := fileManager.SaveToFile()
 	if err != nil {
 		t.Fatalf("Failed to save to file: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestSynchronousFileStorage(t *testing.T) {
 
 	// Create storage with synchronous file saving
 	memStorage := storage.NewMemStorage()
-	fileManager := storage.NewFileManager(filePath)
+	fileManager := storage.NewFileManager(filePath, memStorage)
 	memStorage.SetFileManager(fileManager, true) // Sync saving
 
 	// Setup router

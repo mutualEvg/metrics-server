@@ -11,11 +11,11 @@ import (
 func TestFileManager_SaveAndLoad(t *testing.T) {
 	// Create temporary file
 	tempDir := t.TempDir()
-	filePath := filepath.Join(tempDir, "test_metrics.json")
+	filePath := filepath.Join(tempDir, "test.json")
 
 	// Create storage and file manager
 	storage := NewMemStorage()
-	fileManager := NewFileManager(filePath)
+	fileManager := NewFileManager(filePath, storage)
 
 	// Add some test data
 	storage.UpdateGauge("test_gauge", 123.45)
@@ -23,7 +23,7 @@ func TestFileManager_SaveAndLoad(t *testing.T) {
 	storage.UpdateCounter("test_counter", 8) // Should be 50 total
 
 	// Save to file
-	err := fileManager.SaveToFile(storage)
+	err := fileManager.SaveToFile()
 	if err != nil {
 		t.Fatalf("Failed to save to file: %v", err)
 	}
@@ -52,8 +52,8 @@ func TestFileManager_SaveAndLoad(t *testing.T) {
 
 func TestFileManager_LoadNonexistentFile(t *testing.T) {
 	// Create file manager with non-existent file
-	fileManager := NewFileManager("/nonexistent/path/file.json")
 	storage := NewMemStorage()
+	fileManager := NewFileManager("/nonexistent/path/file.json", storage)
 
 	// Should not return error for non-existent file
 	err := fileManager.LoadFromFile(storage)
@@ -75,7 +75,7 @@ func TestMemStorage_SynchronousSaving(t *testing.T) {
 
 	// Create storage with synchronous saving
 	storage := NewMemStorage()
-	fileManager := NewFileManager(filePath)
+	fileManager := NewFileManager(filePath, storage)
 	storage.SetFileManager(fileManager, true) // Enable sync save
 
 	// Update metrics - should save immediately
@@ -110,7 +110,7 @@ func TestPeriodicSaver(t *testing.T) {
 
 	// Create storage and file manager
 	storage := NewMemStorage()
-	fileManager := NewFileManager(filePath)
+	fileManager := NewFileManager(filePath, storage)
 
 	// Create periodic saver with short interval
 	saver := NewPeriodicSaver(fileManager, storage, 100*time.Millisecond)
@@ -152,7 +152,7 @@ func TestPeriodicSaver_SaveNow(t *testing.T) {
 
 	// Create storage and file manager
 	storage := NewMemStorage()
-	fileManager := NewFileManager(filePath)
+	fileManager := NewFileManager(filePath, storage)
 
 	// Create periodic saver (but don't start it)
 	saver := NewPeriodicSaver(fileManager, storage, time.Hour) // Long interval
@@ -194,8 +194,8 @@ func TestFileStorage_JSONFormat(t *testing.T) {
 	storage.UpdateCounter("json_counter", 789)
 
 	// Save to file
-	fileManager := NewFileManager(filePath)
-	err := fileManager.SaveToFile(storage)
+	fileManager := NewFileManager(filePath, storage)
+	err := fileManager.SaveToFile()
 	if err != nil {
 		t.Fatalf("Failed to save to file: %v", err)
 	}

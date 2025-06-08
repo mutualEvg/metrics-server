@@ -37,7 +37,7 @@ func main() {
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 
 	// Setup file storage
-	fileManager := storage.NewFileManager(cfg.FileStoragePath)
+	fileManager := storage.NewFileManager(cfg.FileStoragePath, memStorage)
 
 	// Configure synchronous saving if store interval is 0
 	syncSave := cfg.StoreInterval == 0
@@ -109,7 +109,7 @@ func main() {
 	}
 
 	// Save final state
-	if err := fileManager.SaveToFile(memStorage); err != nil {
+	if err := fileManager.SaveToFile(); err != nil {
 		log.Error().Err(err).Msg("Failed to save final state")
 	} else {
 		log.Info().Str("file", cfg.FileStoragePath).Msg("Final state saved")
@@ -256,17 +256,18 @@ func updateJSONHandler(s storage.Storage) http.HandlerFunc {
 			}
 			s.UpdateCounter(metric.ID, *metric.Delta)
 			// Get the updated value from storage
-			if updatedValue, ok := s.GetCounter(metric.ID); !ok {
-			        http.Error(w, "Failed to retrieve updated counter value", http.StatusInternalServerError)
+			if updatedValue, ok := s.GetCounter(metric.ID); ok {
+				response := models.Metrics{
+					ID:    metric.ID,
+					MType: metric.MType,
+					Delta: &updatedValue,
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(response)
+			} else {
+				http.Error(w, "Failed to retrieve updated counter value", http.StatusInternalServerError)
 				return
 			}
-		        response := models.Metrics{
-			        ID:    metric.ID,
-			        MType: metric.MType,
-			        Delta: &updatedValue,
-		        }
-		        w.Header().Set("Content-Type", "application/json")
-		        json.NewEncoder(w).Encode(response)
 
 		default:
 			http.Error(w, "Unknown metric type", http.StatusBadRequest)

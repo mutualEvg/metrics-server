@@ -16,7 +16,7 @@ type FileStorage struct {
 // FileManager handles file operations for metrics storage
 type FileManager struct {
 	filePath string
-	storage Storage
+	storage  Storage
 	mu       sync.RWMutex
 }
 
@@ -24,7 +24,7 @@ type FileManager struct {
 func NewFileManager(filePath string, storage Storage) *FileManager {
 	return &FileManager{
 		filePath: filePath,
-		storage: storage,
+		storage:  storage,
 	}
 }
 
@@ -33,7 +33,32 @@ func (fm *FileManager) SaveToFile() error {
 	fm.mu.Lock()
 	defer fm.mu.Unlock()
 
-	gauges, counters := storage.GetAll()
+	gauges, counters := fm.storage.GetAll()
+
+	data := FileStorage{
+		Gauges:   gauges,
+		Counters: counters,
+	}
+
+	jsonData, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	// Write to temporary file first, then rename for atomic operation
+	tempFile := fm.filePath + ".tmp"
+	err = os.WriteFile(tempFile, jsonData, 0644)
+	if err != nil {
+		return err
+	}
+
+	return os.Rename(tempFile, fm.filePath)
+}
+
+// SaveToFileWithData saves the provided data to file (used to avoid deadlocks)
+func (fm *FileManager) SaveToFileWithData(gauges map[string]float64, counters map[string]int64) error {
+	fm.mu.Lock()
+	defer fm.mu.Unlock()
 
 	data := FileStorage{
 		Gauges:   gauges,
@@ -149,7 +174,7 @@ func (ps *PeriodicSaver) Start() {
 		for {
 			select {
 			case <-ticker.C:
-				if err := ps.fileManager.SaveToFile(ps.storage); err != nil {
+				if err := ps.fileManager.SaveToFile(); err != nil {
 					// Log error but continue running
 					// In a real application, you might want to use a proper logger
 					continue
@@ -177,5 +202,5 @@ func (ps *PeriodicSaver) Stop() {
 
 // SaveNow saves immediately (for synchronous mode or shutdown)
 func (ps *PeriodicSaver) SaveNow() error {
-	return ps.fileManager.SaveToFile(ps.storage)
+	return ps.fileManager.SaveToFile()
 }
