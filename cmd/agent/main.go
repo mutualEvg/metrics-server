@@ -26,7 +26,7 @@ const (
 	defaultServerAddress  = "http://localhost:8080"
 	defaultPollInterval   = 2
 	defaultReportInterval = 10
-	defaultBatchSize      = 10
+	defaultBatchSize      = 0 // Default to individual sending for backward compatibility
 )
 
 var (
@@ -103,6 +103,7 @@ func main() {
 	flagReport := flag.Int("r", 0, "Report interval in seconds (default: 10)")
 	flagPoll := flag.Int("p", 0, "Poll interval in seconds (default: 2)")
 	flagBatchSize := flag.Int("b", 0, "Batch size for metrics (default: 10, 0 = disable batching)")
+	flagDisableRetry := flag.Bool("disable-retry", false, "Disable retry logic for testing")
 	flag.Parse()
 
 	if len(flag.Args()) > 0 {
@@ -174,7 +175,21 @@ func main() {
 		serverAddress, pollInterval, reportInterval, batchSize)
 
 	// Initialize retry configuration
-	retryConfig = retry.DefaultConfig()
+	// Use fast retry by default for backward compatibility, full retry only when explicitly enabled
+	if os.Getenv("ENABLE_FULL_RETRY") == "true" {
+		retryConfig = retry.DefaultConfig()
+	} else {
+		retryConfig = retry.FastConfig()
+	}
+
+	// Check if retry should be disabled or shortened (for testing)
+	if *flagDisableRetry || os.Getenv("DISABLE_RETRY") == "true" {
+		retryConfig = retry.NoRetryConfig()
+	} else if os.Getenv("TEST_MODE") == "true" {
+		// Even shorter intervals for testing
+		retryConfig.MaxAttempts = 1 // No retries in test mode
+		retryConfig.Intervals = []time.Duration{}
+	}
 
 	// --- Main program starts
 	var gauges sync.Map

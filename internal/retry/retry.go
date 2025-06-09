@@ -28,6 +28,22 @@ func DefaultConfig() RetryConfig {
 	}
 }
 
+// FastConfig returns a fast retry configuration for testing
+func FastConfig() RetryConfig {
+	return RetryConfig{
+		MaxAttempts: 2, // 1 initial + 1 retry
+		Intervals:   []time.Duration{50 * time.Millisecond},
+	}
+}
+
+// NoRetryConfig returns a configuration with no retries
+func NoRetryConfig() RetryConfig {
+	return RetryConfig{
+		MaxAttempts: 1, // Just one attempt
+		Intervals:   []time.Duration{},
+	}
+}
+
 // RetryableFunc is a function that can be retried
 type RetryableFunc func() error
 

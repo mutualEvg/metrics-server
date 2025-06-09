@@ -146,12 +146,57 @@ err := retry.Do(ctx, retryConfig, func() error {
 
 ## Configuration
 
-The default retry configuration can be customized:
+The retry behavior can be configured in several ways:
+
+### Default Behavior
+By default, the agent uses **fast retry** for backward compatibility:
+- **2 attempts** (1 initial + 1 retry)
+- **50ms interval** between attempts
+
+### Full Retry Mode
+To enable full retry with the original specification:
+```bash
+export ENABLE_FULL_RETRY=true
+./agent
+```
+
+This provides:
+- **4 attempts** (1 initial + 3 retries)
+- **Exponential backoff**: 1s, 3s, 5s
+
+### Disable Retry
+To completely disable retry logic:
+```bash
+export DISABLE_RETRY=true
+./agent
+# OR
+./agent -disable-retry
+```
+
+### Test Mode
+For testing scenarios with minimal delays:
+```bash
+export TEST_MODE=true
+./agent
+```
+
+### Custom Configuration
+The retry configuration can be programmatically customized:
 
 ```go
+// Full retry (production)
+config := retry.DefaultConfig()
+
+// Fast retry (default)
+config := retry.FastConfig()
+
+// No retry (testing)
+config := retry.NoRetryConfig()
+
+// Custom configuration
 config := retry.RetryConfig{
-    MaxAttempts: 4, // 1 initial + 3 retries
-    Intervals:   []time.Duration{1*time.Second, 3*time.Second, 5*time.Second},
+    MaxAttempts: 3,
+    Intervals:   []time.Duration{500*time.Millisecond, 1*time.Second},
 }
 ```
 
