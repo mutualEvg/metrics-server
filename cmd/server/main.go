@@ -31,35 +31,77 @@ const (
 
 func main() {
 	cfg := config.Load()
-	memStorage := storage.NewMemStorage()
 
 	// Setup zerolog
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 
-	// Setup file storage
-	fileManager := storage.NewFileManager(cfg.FileStoragePath, memStorage)
+	// Initialize storage based on configuration priority:
+	// 1. Database storage (if DATABASE_DSN is provided)
+	// 2. File storage (if file storage is explicitly configured)
+	// 3. Memory storage (fallback)
+	var mainStorage storage.Storage
+	var dbStorage *storage.DBStorage
+	var err error
 
-	// Configure synchronous saving if store interval is 0
-	syncSave := cfg.StoreInterval == 0
-	memStorage.SetFileManager(fileManager, syncSave)
-
-	// Restore data if configured
-	if cfg.Restore {
-		if err := fileManager.LoadFromFile(memStorage); err != nil {
-			log.Error().Err(err).Msg("Failed to restore data from file")
-		} else {
-			log.Info().Str("file", cfg.FileStoragePath).Msg("Data restored from file")
+	if cfg.DatabaseDSN != "" {
+		// Priority 1: Use database storage
+		dbStorage, err = storage.NewDBStorage(cfg.DatabaseDSN)
+		if err != nil {
+			log.Fatal().Err(err).Msg("Failed to initialize database storage")
 		}
-	}
+		mainStorage = dbStorage
+		log.Info().Msg("Using PostgreSQL database storage")
+	} else if cfg.UseFileStorage {
+		// Priority 2: Use file storage
+		memStorage := storage.NewMemStorage()
+		mainStorage = memStorage
 
-	// Setup periodic saving if not synchronous
-	var periodicSaver *storage.PeriodicSaver
-	if !syncSave {
-		periodicSaver = storage.NewPeriodicSaver(fileManager, memStorage, cfg.StoreInterval)
-		periodicSaver.Start()
-		log.Info().Dur("interval", cfg.StoreInterval).Msg("Started periodic saving")
+		// Setup file storage
+		fileManager := storage.NewFileManager(cfg.FileStoragePath, memStorage)
+
+		// Configure synchronous saving if store interval is 0
+		syncSave := cfg.StoreInterval == 0
+		memStorage.SetFileManager(fileManager, syncSave)
+
+		// Restore data if configured
+		if cfg.Restore {
+			if err := fileManager.LoadFromFile(memStorage); err != nil {
+				log.Error().Err(err).Msg("Failed to restore data from file")
+			} else {
+				log.Info().Str("file", cfg.FileStoragePath).Msg("Data restored from file")
+			}
+		}
+
+		// Setup periodic saving if not synchronous
+		var periodicSaver *storage.PeriodicSaver
+		if !syncSave {
+			periodicSaver = storage.NewPeriodicSaver(fileManager, memStorage, cfg.StoreInterval)
+			periodicSaver.Start()
+			log.Info().Dur("interval", cfg.StoreInterval).Msg("Started periodic saving")
+
+			// Setup graceful shutdown for periodic saver
+			defer func() {
+				if periodicSaver != nil {
+					periodicSaver.Stop()
+					log.Info().Msg("Stopped periodic saving")
+				}
+
+				// Save final state
+				if err := fileManager.SaveToFile(); err != nil {
+					log.Error().Err(err).Msg("Failed to save final state")
+				} else {
+					log.Info().Str("file", cfg.FileStoragePath).Msg("Final state saved")
+				}
+			}()
+		} else {
+			log.Info().Msg("Synchronous saving enabled")
+		}
+
+		log.Info().Str("file", cfg.FileStoragePath).Msg("Using file storage")
 	} else {
-		log.Info().Msg("Synchronous saving enabled")
+		// Priority 3: Use pure memory storage
+		mainStorage = storage.NewMemStorage()
+		log.Info().Msg("Using in-memory storage (no persistence)")
 	}
 
 	r := chi.NewRouter()
@@ -68,15 +110,19 @@ func main() {
 	r.Use(loggingMiddleware)
 	r.Use(gzipmw.GzipMiddleware)
 
+	// Database ping handler
+	r.Get("/ping", pingHandler(dbStorage))
+
 	// Legacy URL-based API
-	r.Post("/update/{type}/{name}/{value}", updateHandler(memStorage))
-	r.Get("/value/{type}/{name}", valueHandler(memStorage))
+	r.Post("/update/{type}/{name}/{value}", updateHandler(mainStorage))
+	r.Get("/value/{type}/{name}", valueHandler(mainStorage))
 
 	// New JSON API
-	r.Post("/update/", updateJSONHandler(memStorage))
-	r.Post("/value/", valueJSONHandler(memStorage))
+	r.Post("/update/", updateJSONHandler(mainStorage))
+	r.Post("/value/", valueJSONHandler(mainStorage))
+	r.Post("/updates/", updateBatchHandler(mainStorage))
 
-	r.Get("/", rootHandler(memStorage))
+	r.Get("/", rootHandler(mainStorage))
 
 	addr := strings.TrimPrefix(cfg.ServerAddress, "http://")
 	addr = strings.TrimPrefix(addr, "https://")
@@ -102,20 +148,36 @@ func main() {
 	<-sigChan
 	log.Info().Msg("Shutdown signal received")
 
-	// Stop periodic saving
-	if periodicSaver != nil {
-		periodicSaver.Stop()
-		log.Info().Msg("Stopped periodic saving")
-	}
-
-	// Save final state
-	if err := fileManager.SaveToFile(); err != nil {
-		log.Error().Err(err).Msg("Failed to save final state")
-	} else {
-		log.Info().Str("file", cfg.FileStoragePath).Msg("Final state saved")
+	// Close database connection if using database storage
+	if dbStorage != nil {
+		if err := dbStorage.Close(); err != nil {
+			log.Error().Err(err).Msg("Failed to close database connection")
+		} else {
+			log.Info().Msg("Database connection closed")
+		}
 	}
 
 	log.Info().Msg("Server shutdown complete")
+}
+
+// pingHandler handles the /ping endpoint to check database connectivity
+func pingHandler(dbStorage *storage.DBStorage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if dbStorage == nil {
+			// No database configured
+			http.Error(w, "Database not configured", http.StatusInternalServerError)
+			return
+		}
+
+		if err := dbStorage.Ping(); err != nil {
+			log.Error().Err(err).Msg("Database ping failed")
+			http.Error(w, "Database connection failed", http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	}
 }
 
 func loggingMiddleware(next http.Handler) http.Handler {
@@ -335,5 +397,101 @@ func valueJSONHandler(s storage.Storage) http.HandlerFunc {
 			http.Error(w, "Unknown metric type", http.StatusBadRequest)
 			return
 		}
+	}
+}
+
+// updateBatchHandler handles POST /updates/ with JSON array of metrics
+func updateBatchHandler(s storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Content-Type") != "application/json" {
+			http.Error(w, "Content-Type must be application/json", http.StatusBadRequest)
+			return
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read request body", http.StatusBadRequest)
+			return
+		}
+
+		var metrics []models.Metrics
+		if err := json.Unmarshal(body, &metrics); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		// Don't process empty batches
+		if len(metrics) == 0 {
+			http.Error(w, "Empty batch not allowed", http.StatusBadRequest)
+			return
+		}
+
+		// Check if we have database storage for transaction support
+		if dbStorage, ok := s.(*storage.DBStorage); ok {
+			// Use database transaction for batch processing
+			if err := dbStorage.UpdateBatch(metrics); err != nil {
+				log.Error().Err(err).Msg("Failed to process batch update in database")
+				http.Error(w, "Failed to process batch update", http.StatusInternalServerError)
+				return
+			}
+		} else {
+			// For memory/file storage, process sequentially with proper locking
+			for _, metric := range metrics {
+				// Validate required fields
+				if metric.ID == "" || metric.MType == "" {
+					http.Error(w, "ID and MType are required for all metrics", http.StatusBadRequest)
+					return
+				}
+
+				switch metric.MType {
+				case GaugeType:
+					if metric.Value == nil {
+						http.Error(w, "Value is required for gauge metrics", http.StatusBadRequest)
+						return
+					}
+					s.UpdateGauge(metric.ID, *metric.Value)
+
+				case CounterType:
+					if metric.Delta == nil {
+						http.Error(w, "Delta is required for counter metrics", http.StatusBadRequest)
+						return
+					}
+					s.UpdateCounter(metric.ID, *metric.Delta)
+
+				default:
+					http.Error(w, "Unknown metric type: "+metric.MType, http.StatusBadRequest)
+					return
+				}
+			}
+		}
+
+		// Return success response
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		// Return the processed metrics (optional, for confirmation)
+		response := make([]models.Metrics, 0, len(metrics))
+		for _, metric := range metrics {
+			switch metric.MType {
+			case GaugeType:
+				if value, ok := s.GetGauge(metric.ID); ok {
+					response = append(response, models.Metrics{
+						ID:    metric.ID,
+						MType: metric.MType,
+						Value: &value,
+					})
+				}
+			case CounterType:
+				if value, ok := s.GetCounter(metric.ID); ok {
+					response = append(response, models.Metrics{
+						ID:    metric.ID,
+						MType: metric.MType,
+						Delta: &value,
+					})
+				}
+			}
+		}
+
+		json.NewEncoder(w).Encode(response)
 	}
 }
