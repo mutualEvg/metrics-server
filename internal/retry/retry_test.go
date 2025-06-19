@@ -18,7 +18,7 @@ func TestRetryLogic(t *testing.T) {
 		Intervals:   []time.Duration{10 * time.Millisecond, 20 * time.Millisecond},
 	}
 
-	t.Run("Success on first attempt", func(t *testing.T) {
+	t.Run("Success_on_first_attempt", func(t *testing.T) {
 		attempts := 0
 		err := Do(context.Background(), config, func() error {
 			attempts++
@@ -33,7 +33,7 @@ func TestRetryLogic(t *testing.T) {
 		}
 	})
 
-	t.Run("Success after retries", func(t *testing.T) {
+	t.Run("Success_after_retries", func(t *testing.T) {
 		attempts := 0
 		err := Do(context.Background(), config, func() error {
 			attempts++
@@ -51,7 +51,7 @@ func TestRetryLogic(t *testing.T) {
 		}
 	})
 
-	t.Run("Non-retriable error", func(t *testing.T) {
+	t.Run("Non-retriable_error", func(t *testing.T) {
 		attempts := 0
 		err := Do(context.Background(), config, func() error {
 			attempts++
@@ -66,7 +66,7 @@ func TestRetryLogic(t *testing.T) {
 		}
 	})
 
-	t.Run("Max attempts exhausted", func(t *testing.T) {
+	t.Run("Max_attempts_exhausted", func(t *testing.T) {
 		attempts := 0
 		err := Do(context.Background(), config, func() error {
 			attempts++

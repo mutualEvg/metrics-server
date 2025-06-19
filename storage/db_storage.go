@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -17,7 +16,6 @@ import (
 
 type DBStorage struct {
 	db          *sqlx.DB
-	mu          sync.RWMutex
 	retryConfig retry.RetryConfig
 }
 
@@ -87,9 +85,6 @@ func (ds *DBStorage) createTables() error {
 
 // UpdateGauge updates or inserts a gauge metric
 func (ds *DBStorage) UpdateGauge(name string, value float64) {
-	ds.mu.Lock()
-	defer ds.mu.Unlock()
-
 	if ds.db == nil {
 		log.Error().Str("name", name).Float64("value", value).Msg("Database connection is nil, cannot update gauge")
 		return
@@ -118,9 +113,6 @@ func (ds *DBStorage) UpdateGauge(name string, value float64) {
 
 // UpdateCounter updates or inserts a counter metric (adds to existing value)
 func (ds *DBStorage) UpdateCounter(name string, value int64) {
-	ds.mu.Lock()
-	defer ds.mu.Unlock()
-
 	if ds.db == nil {
 		log.Error().Str("name", name).Int64("value", value).Msg("Database connection is nil, cannot update counter")
 		return
@@ -158,9 +150,6 @@ func (ds *DBStorage) UpdateCounter(name string, value int64) {
 
 // GetGauge retrieves a gauge metric
 func (ds *DBStorage) GetGauge(name string) (float64, bool) {
-	ds.mu.RLock()
-	defer ds.mu.RUnlock()
-
 	if ds.db == nil {
 		log.Error().Str("name", name).Msg("Database connection is nil, cannot get gauge")
 		return 0, false
@@ -187,9 +176,6 @@ func (ds *DBStorage) GetGauge(name string) (float64, bool) {
 
 // GetCounter retrieves a counter metric
 func (ds *DBStorage) GetCounter(name string) (int64, bool) {
-	ds.mu.RLock()
-	defer ds.mu.RUnlock()
-
 	if ds.db == nil {
 		log.Error().Str("name", name).Msg("Database connection is nil, cannot get counter")
 		return 0, false
@@ -216,9 +202,6 @@ func (ds *DBStorage) GetCounter(name string) (int64, bool) {
 
 // GetAll retrieves all metrics
 func (ds *DBStorage) GetAll() (map[string]float64, map[string]int64) {
-	ds.mu.RLock()
-	defer ds.mu.RUnlock()
-
 	gauges := make(map[string]float64)
 	counters := make(map[string]int64)
 
@@ -322,9 +305,6 @@ func (ds *DBStorage) UpdateBatch(metrics []models.Metrics) error {
 			return fmt.Errorf("failed to begin transaction: %w", err)
 		}
 		defer tx.Rollback() // Will be ignored if tx.Commit() succeeds
-
-		ds.mu.Lock()
-		defer ds.mu.Unlock()
 
 		// Process each metric in the transaction
 		for _, metric := range metrics {
