@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/mutualEvg/metrics-server/internal/handlers"
 	gzipmw "github.com/mutualEvg/metrics-server/internal/middleware"
 	"github.com/mutualEvg/metrics-server/internal/models"
 	"github.com/mutualEvg/metrics-server/storage"
@@ -18,7 +19,7 @@ import (
 func TestUpdateHandler(t *testing.T) {
 	storage := storage.NewMemStorage()
 	router := chi.NewRouter()
-	router.Post("/update/{type}/{name}/{value}", updateHandler(storage))
+	router.Post("/update/{type}/{name}/{value}", handlers.UpdateHandler(storage))
 
 	tests := []struct {
 		name       string
@@ -84,7 +85,7 @@ func TestUpdateHandler(t *testing.T) {
 func TestUpdateJSONHandler(t *testing.T) {
 	storage := storage.NewMemStorage()
 	router := chi.NewRouter()
-	router.Post("/update/", updateJSONHandler(storage))
+	router.Post("/update/", handlers.UpdateJSONHandler(storage))
 
 	tests := []struct {
 		name       string
@@ -162,7 +163,7 @@ func TestValueJSONHandler(t *testing.T) {
 	storage.UpdateCounter("testCounter", 42)
 
 	router := chi.NewRouter()
-	router.Post("/value/", valueJSONHandler(storage))
+	router.Post("/value/", handlers.ValueJSONHandler(storage))
 
 	tests := []struct {
 		name       string
@@ -218,7 +219,7 @@ func TestGzipCompression(t *testing.T) {
 	storage := storage.NewMemStorage()
 	router := chi.NewRouter()
 	router.Use(gzipmw.GzipMiddleware)
-	router.Post("/update/", updateJSONHandler(storage))
+	router.Post("/update/", handlers.UpdateJSONHandler(storage))
 
 	metric := models.Metrics{
 		ID:    "testGauge",
@@ -265,7 +266,7 @@ func TestGzipDecompression(t *testing.T) {
 	storage := storage.NewMemStorage()
 	router := chi.NewRouter()
 	router.Use(gzipmw.GzipMiddleware)
-	router.Post("/update/", updateJSONHandler(storage))
+	router.Post("/update/", handlers.UpdateJSONHandler(storage))
 
 	metric := models.Metrics{
 		ID:    "testGauge",

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -18,20 +19,74 @@ import (
 	"time"
 
 	"github.com/mutualEvg/metrics-server/internal/models"
+	"github.com/mutualEvg/metrics-server/internal/retry"
 )
 
 const (
 	defaultServerAddress  = "http://localhost:8080"
 	defaultPollInterval   = 2
 	defaultReportInterval = 10
+	defaultBatchSize      = 0 // Default to individual sending for backward compatibility
 )
 
 var (
 	serverAddress  string
 	pollInterval   time.Duration
 	reportInterval time.Duration
+	batchSize      int
 	pollCount      int64
+	retryConfig    retry.RetryConfig
 )
+
+// MetricsBatch holds a collection of metrics to send
+type MetricsBatch struct {
+	metrics []models.Metrics
+	mu      sync.Mutex
+}
+
+// NewMetricsBatch creates a new batch
+func NewMetricsBatch() *MetricsBatch {
+	return &MetricsBatch{
+		metrics: make([]models.Metrics, 0),
+	}
+}
+
+// AddGauge adds a gauge metric to the batch
+func (mb *MetricsBatch) AddGauge(name string, value float64) {
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+	mb.metrics = append(mb.metrics, models.Metrics{
+		ID:    name,
+		MType: "gauge",
+		Value: &value,
+	})
+}
+
+// AddCounter adds a counter metric to the batch
+func (mb *MetricsBatch) AddCounter(name string, delta int64) {
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+	mb.metrics = append(mb.metrics, models.Metrics{
+		ID:    name,
+		MType: "counter",
+		Delta: &delta,
+	})
+}
+
+// GetAndClear returns all metrics and clears the batch
+func (mb *MetricsBatch) GetAndClear() []models.Metrics {
+	mb.mu.Lock()
+	defer mb.mu.Unlock()
+
+	if len(mb.metrics) == 0 {
+		return nil
+	}
+
+	result := make([]models.Metrics, len(mb.metrics))
+	copy(result, mb.metrics)
+	mb.metrics = mb.metrics[:0] // Clear the slice
+	return result
+}
 
 // List of metrics to collect from runtime.MemStats
 var gaugeMetrics = []string{
@@ -47,6 +102,8 @@ func main() {
 	flagAddress := flag.String("a", "", "HTTP server address (default: http://localhost:8080)")
 	flagReport := flag.Int("r", 0, "Report interval in seconds (default: 10)")
 	flagPoll := flag.Int("p", 0, "Poll interval in seconds (default: 2)")
+	flagBatchSize := flag.Int("b", 0, "Batch size for metrics (default: 10, 0 = disable batching)")
+	flagDisableRetry := flag.Bool("disable-retry", false, "Disable retry logic for testing")
 	flag.Parse()
 
 	if len(flag.Args()) > 0 {
@@ -67,6 +124,7 @@ func main() {
 	if !strings.HasPrefix(serverAddress, "http://") && !strings.HasPrefix(serverAddress, "https://") {
 		serverAddress = "http://" + serverAddress
 	}
+
 	// --- Report Interval
 	reportEnv := os.Getenv("REPORT_INTERVAL")
 	var reportSeconds int
@@ -99,8 +157,43 @@ func main() {
 	}
 	pollInterval = time.Duration(pollSeconds) * time.Second
 
+	// --- Batch Size
+	batchEnv := os.Getenv("BATCH_SIZE")
+	if batchEnv != "" {
+		val, err := strconv.Atoi(batchEnv)
+		if err != nil {
+			log.Fatalf("Invalid BATCH_SIZE: %v", err)
+		}
+		batchSize = val
+	} else if *flagBatchSize != 0 {
+		batchSize = *flagBatchSize
+	} else {
+		batchSize = defaultBatchSize
+	}
+
+	log.Printf("Agent starting with server=%s, poll=%v, report=%v, batch_size=%d",
+		serverAddress, pollInterval, reportInterval, batchSize)
+
+	// Initialize retry configuration
+	// Use fast retry by default for backward compatibility, full retry only when explicitly enabled
+	if os.Getenv("ENABLE_FULL_RETRY") == "true" {
+		retryConfig = retry.DefaultConfig()
+	} else {
+		retryConfig = retry.FastConfig()
+	}
+
+	// Check if retry should be disabled or shortened (for testing)
+	if *flagDisableRetry || os.Getenv("DISABLE_RETRY") == "true" {
+		retryConfig = retry.NoRetryConfig()
+	} else if os.Getenv("TEST_MODE") == "true" {
+		// Even shorter intervals for testing
+		retryConfig.MaxAttempts = 1 // No retries in test mode
+		retryConfig.Intervals = []time.Duration{}
+	}
+
 	// --- Main program starts
 	var gauges sync.Map
+	batch := NewMetricsBatch()
 
 	tickerPoll := time.NewTicker(pollInterval)
 	defer tickerPoll.Stop()
@@ -116,10 +209,19 @@ func main() {
 			pollMetrics(&gauges)
 
 		case <-tickerReport.C:
-			reportMetrics(&gauges)
+			if batchSize > 0 {
+				reportMetricsBatch(&gauges, batch)
+			} else {
+				reportMetricsIndividual(&gauges)
+			}
 
 		case <-signalChan:
-			fmt.Println("Received shutdown signal. Exiting...")
+			fmt.Println("Received shutdown signal. Sending final metrics...")
+			if batchSize > 0 {
+				reportMetricsBatch(&gauges, batch)
+			} else {
+				reportMetricsIndividual(&gauges)
+			}
 			return
 		}
 	}
@@ -196,7 +298,91 @@ func pollMetrics(gauges *sync.Map) {
 	pollCount++
 }
 
-func reportMetrics(gauges *sync.Map) {
+func reportMetricsBatch(gauges *sync.Map, batch *MetricsBatch) {
+	// Add all gauge metrics to batch
+	gauges.Range(func(key, value any) bool {
+		name, _ := key.(string)
+		val, _ := value.(float64)
+		batch.AddGauge(name, val)
+		return true
+	})
+
+	// Add counter metric
+	batch.AddCounter("PollCount", pollCount)
+
+	// Get all metrics and send as batch
+	metrics := batch.GetAndClear()
+	if len(metrics) > 0 {
+		if err := sendBatch(metrics); err != nil {
+			log.Printf("Failed to send batch: %v", err)
+			// Fallback to individual sending
+			client := &http.Client{}
+			for _, metric := range metrics {
+				if metric.MType == "gauge" && metric.Value != nil {
+					sendMetricJSON(client, "gauge", metric.ID, *metric.Value, 0)
+				} else if metric.MType == "counter" && metric.Delta != nil {
+					sendMetricJSON(client, "counter", metric.ID, 0, *metric.Delta)
+				}
+			}
+		} else {
+			log.Printf("Successfully sent batch of %d metrics", len(metrics))
+		}
+	}
+}
+
+// sendBatch sends a batch of metrics using the /updates/ endpoint
+func sendBatch(metrics []models.Metrics) error {
+	if len(metrics) == 0 {
+		return nil // Don't send empty batches
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	return retry.Do(ctx, retryConfig, func() error {
+		// Marshal to JSON
+		jsonData, err := json.Marshal(metrics)
+		if err != nil {
+			return fmt.Errorf("failed to marshal metrics: %w", err)
+		}
+
+		// Compress with gzip
+		var compressedData bytes.Buffer
+		gzipWriter := gzip.NewWriter(&compressedData)
+		if _, err := gzipWriter.Write(jsonData); err != nil {
+			return fmt.Errorf("failed to compress data: %w", err)
+		}
+		if err := gzipWriter.Close(); err != nil {
+			return fmt.Errorf("failed to close gzip writer: %w", err)
+		}
+
+		// Create HTTP request
+		url := fmt.Sprintf("%s/updates/", serverAddress)
+		req, err := http.NewRequest("POST", url, &compressedData)
+		if err != nil {
+			return fmt.Errorf("failed to create request: %w", err)
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Encoding", "gzip")
+
+		// Send request
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return fmt.Errorf("failed to send request: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("server returned status %d", resp.StatusCode)
+		}
+
+		return nil
+	})
+}
+
+func reportMetricsIndividual(gauges *sync.Map) {
 	client := &http.Client{}
 
 	gauges.Range(func(key, value any) bool {
@@ -234,59 +420,64 @@ func sendMetric(client *http.Client, metricType, metricName, metricValue string)
 
 // sendMetricJSON sends metrics using the new JSON API with gzip compression
 func sendMetricJSON(client *http.Client, metricType, metricName string, gaugeValue float64, counterValue int64) {
-	var metric models.Metrics
-	metric.ID = metricName
-	metric.MType = metricType
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 
-	switch metricType {
-	case "gauge":
-		metric.Value = &gaugeValue
-	case "counter":
-		metric.Delta = &counterValue
-	default:
-		log.Printf("Unknown metric type: %s", metricType)
-		return
-	}
+	err := retry.Do(ctx, retryConfig, func() error {
+		var metric models.Metrics
+		metric.ID = metricName
+		metric.MType = metricType
 
-	jsonData, err := json.Marshal(metric)
+		switch metricType {
+		case "gauge":
+			metric.Value = &gaugeValue
+		case "counter":
+			metric.Delta = &counterValue
+		default:
+			return fmt.Errorf("unknown metric type: %s", metricType)
+		}
+
+		jsonData, err := json.Marshal(metric)
+		if err != nil {
+			return fmt.Errorf("failed to marshal JSON: %w", err)
+		}
+
+		// Compress the JSON data
+		var compressedData bytes.Buffer
+		gzipWriter := gzip.NewWriter(&compressedData)
+		_, err = gzipWriter.Write(jsonData)
+		if err != nil {
+			return fmt.Errorf("failed to compress data: %w", err)
+		}
+		err = gzipWriter.Close()
+		if err != nil {
+			return fmt.Errorf("failed to close gzip writer: %w", err)
+		}
+
+		url := fmt.Sprintf("%s/update/", serverAddress)
+		req, err := http.NewRequest(http.MethodPost, url, &compressedData)
+		if err != nil {
+			return fmt.Errorf("failed to create request: %w", err)
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Encoding", "gzip")
+		req.Header.Set("Accept-Encoding", "gzip")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return fmt.Errorf("failed to send metric: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("server returned non-OK status: %s", resp.Status)
+		}
+
+		return nil
+	})
+
 	if err != nil {
-		log.Printf("Failed to marshal JSON: %v", err)
-		return
-	}
-
-	// Compress the JSON data
-	var compressedData bytes.Buffer
-	gzipWriter := gzip.NewWriter(&compressedData)
-	_, err = gzipWriter.Write(jsonData)
-	if err != nil {
-		log.Printf("Failed to compress data: %v", err)
-		return
-	}
-	err = gzipWriter.Close()
-	if err != nil {
-		log.Printf("Failed to close gzip writer: %v", err)
-		return
-	}
-
-	url := fmt.Sprintf("%s/update/", serverAddress)
-	req, err := http.NewRequest(http.MethodPost, url, &compressedData)
-	if err != nil {
-		log.Printf("Failed to create request: %v", err)
-		return
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Content-Encoding", "gzip")
-	req.Header.Set("Accept-Encoding", "gzip")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Printf("Failed to send metric: %v", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("Server returned non-OK status: %s", resp.Status)
+		log.Printf("Failed to send metric %s after retries: %v", metricName, err)
 	}
 }
