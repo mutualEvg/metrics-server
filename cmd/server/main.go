@@ -109,18 +109,18 @@ func main() {
 	r.Post("/update/{type}/{name}/{value}", handlers.UpdateHandler(mainStorage))
 	r.Get("/value/{type}/{name}", handlers.ValueHandler(mainStorage))
 
-	// New JSON API with Content-Type middleware
-	r.Route("/update/", func(r chi.Router) {
+	// New JSON API with Content-Type middleware - be more specific with routes
+	r.Route("/update", func(r chi.Router) {
 		r.Use(gzipmw.RequireContentType("application/json"))
 		r.Post("/", handlers.UpdateJSONHandler(mainStorage))
 	})
 
-	r.Route("/value/", func(r chi.Router) {
+	r.Route("/value", func(r chi.Router) {
 		r.Use(gzipmw.RequireContentType("application/json"))
 		r.Post("/", handlers.ValueJSONHandler(mainStorage))
 	})
 
-	r.Route("/updates/", func(r chi.Router) {
+	r.Route("/updates", func(r chi.Router) {
 		r.Use(gzipmw.RequireContentType("application/json"))
 		r.Post("/", handlers.UpdateBatchHandler(mainStorage))
 	})
