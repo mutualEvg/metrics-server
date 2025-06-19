@@ -1,3 +1,5 @@
+//go:build integration
+
 package main
 
 import (
@@ -14,7 +16,7 @@ func TestAgentRetryModes(t *testing.T) {
 
 	t.Run("Default (fast) retry mode", func(t *testing.T) {
 		port := basePort + 1
-		agent := exec.Command("./agent", "-a", "localhost:"+strconv.Itoa(port), "-p", "1", "-r", "1")
+		agent := exec.Command("../../agent", "-a", "localhost:"+strconv.Itoa(port), "-p", "1", "-r", "1")
 		agent.Env = os.Environ()
 		output, err := runWithTimeout(agent, 3*time.Second)
 		if err == nil {
@@ -27,7 +29,7 @@ func TestAgentRetryModes(t *testing.T) {
 
 	t.Run("Disable retry mode", func(t *testing.T) {
 		port := basePort + 2
-		agent := exec.Command("./agent", "-a", "localhost:"+strconv.Itoa(port), "-p", "1", "-r", "1")
+		agent := exec.Command("../../agent", "-a", "localhost:"+strconv.Itoa(port), "-p", "1", "-r", "1")
 		agent.Env = append(os.Environ(), "DISABLE_RETRY=true")
 		output, err := runWithTimeout(agent, 3*time.Second)
 		if err == nil {
@@ -40,7 +42,7 @@ func TestAgentRetryModes(t *testing.T) {
 
 	t.Run("Full retry mode", func(t *testing.T) {
 		port := basePort + 3
-		agent := exec.Command("./agent", "-a", "localhost:"+strconv.Itoa(port), "-p", "1", "-r", "1")
+		agent := exec.Command("../../agent", "-a", "localhost:"+strconv.Itoa(port), "-p", "1", "-r", "1")
 		agent.Env = append(os.Environ(), "ENABLE_FULL_RETRY=true")
 		output, err := runWithTimeout(agent, 5*time.Second)
 		if err == nil {
@@ -53,7 +55,7 @@ func TestAgentRetryModes(t *testing.T) {
 
 	t.Run("Agent succeeds when server is running", func(t *testing.T) {
 		port := basePort + 4
-		server := exec.Command("./server", "-a", "localhost:"+strconv.Itoa(port))
+		server := exec.Command("../../server", "-a", "localhost:"+strconv.Itoa(port))
 		server.Stdout = os.Stdout
 		server.Stderr = os.Stderr
 		if err := server.Start(); err != nil {
@@ -65,7 +67,7 @@ func TestAgentRetryModes(t *testing.T) {
 		}()
 		time.Sleep(2 * time.Second)
 
-		agent := exec.Command("./agent", "-a", "localhost:"+strconv.Itoa(port), "-p", "1", "-r", "1")
+		agent := exec.Command("../../agent", "-a", "localhost:"+strconv.Itoa(port), "-p", "1", "-r", "1")
 		agent.Env = os.Environ()
 		output, err := runWithTimeout(agent, 3*time.Second)
 		if err != nil && !strings.Contains(output, "Successfully") {
