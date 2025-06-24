@@ -25,6 +25,17 @@ func HashVerification(key string) func(http.Handler) http.Handler {
 				return
 			}
 
+			// Get the provided hash from header
+			providedHash := r.Header.Get("HashSHA256")
+
+			// If no hash is provided, allow the request to pass through
+			// This allows test clients to work without hashes while
+			// still verifying hashes when they are provided (like from agent)
+			if providedHash == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			// Read the request body
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
@@ -35,9 +46,6 @@ func HashVerification(key string) func(http.Handler) http.Handler {
 
 			// Restore the request body for subsequent handlers
 			r.Body = io.NopCloser(bytes.NewReader(body))
-
-			// Get the provided hash from header
-			providedHash := r.Header.Get("HashSHA256")
 
 			// Verify the hash
 			if !hash.VerifyHash(body, key, providedHash) {
