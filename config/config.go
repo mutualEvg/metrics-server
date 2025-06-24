@@ -16,6 +16,8 @@ type Config struct {
 	StoreInterval   time.Duration
 	FileStoragePath string
 	Restore         bool
+	DatabaseDSN     string
+	UseFileStorage  bool // Indicates if file storage was explicitly configured
 }
 
 const (
@@ -25,24 +27,41 @@ const (
 	defaultStoreSeconds    = 300
 	defaultFileStoragePath = "/tmp/metrics-db.json"
 	defaultRestore         = true
+	defaultDatabaseDSN     = ""
 )
 
 func Load() *Config {
 	// Flags
 	flagAddress := flag.String("a", "", "HTTP server address")
 	flagPoll := flag.Int("p", 0, "Poll interval in seconds")
-	flagReport := flag.Int("r", 0, "Report interval in seconds")
 	flagStoreInterval := flag.Int("i", 0, "Store interval in seconds (0 for synchronous)")
 	flagFileStoragePath := flag.String("f", "", "File storage path")
-	flagRestore := flag.Bool("restore", false, "Restore previously stored values")
+	flagRestore := flag.Bool("r", false, "Restore previously stored values")
+	flagDatabaseDSN := flag.String("d", "", "Database connection string")
 	flag.Parse()
 
 	addr := resolveString("ADDRESS", *flagAddress, defaultServerAddress)
 	poll := resolveInt("POLL_INTERVAL", *flagPoll, defaultPollSeconds)
-	report := resolveInt("REPORT_INTERVAL", *flagReport, defaultReportSeconds)
+	report := resolveInt("REPORT_INTERVAL", 0, defaultReportSeconds) // No flag for report interval, use env var only
 	storeInterval := resolveInt("STORE_INTERVAL", *flagStoreInterval, defaultStoreSeconds)
-	fileStoragePath := resolveString("FILE_STORAGE_PATH", *flagFileStoragePath, defaultFileStoragePath)
+	databaseDSN := resolveString("DATABASE_DSN", *flagDatabaseDSN, defaultDatabaseDSN)
 	restore := resolveBool("RESTORE", *flagRestore, defaultRestore)
+
+	// Determine if file storage is explicitly configured
+	var fileStoragePath string
+	var useFileStorage bool
+
+	if envPath := os.Getenv("FILE_STORAGE_PATH"); envPath != "" {
+		fileStoragePath = envPath
+		useFileStorage = true
+	} else if *flagFileStoragePath != "" {
+		fileStoragePath = *flagFileStoragePath
+		useFileStorage = true
+	} else {
+		// No explicit file storage configuration
+		fileStoragePath = defaultFileStoragePath
+		useFileStorage = false
+	}
 
 	return &Config{
 		ServerAddress:   addr,
@@ -51,6 +70,8 @@ func Load() *Config {
 		StoreInterval:   time.Duration(storeInterval) * time.Second,
 		FileStoragePath: fileStoragePath,
 		Restore:         restore,
+		DatabaseDSN:     databaseDSN,
+		UseFileStorage:  useFileStorage,
 	}
 }
 
