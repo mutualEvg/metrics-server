@@ -18,6 +18,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/shirou/gopsutil/v3/mem"
+
 	"github.com/mutualEvg/metrics-server/internal/hash"
 	"github.com/mutualEvg/metrics-server/internal/models"
 	"github.com/mutualEvg/metrics-server/internal/retry"
@@ -27,7 +30,8 @@ const (
 	defaultServerAddress  = "http://localhost:8080"
 	defaultPollInterval   = 2
 	defaultReportInterval = 10
-	defaultBatchSize      = 0 // Default to individual sending for backward compatibility
+	defaultBatchSize      = 0  // Default to individual sending for backward compatibility
+	defaultRateLimit      = 10 // Default rate limit for concurrent requests
 )
 
 var (
@@ -38,9 +42,128 @@ var (
 	pollCount      int64
 	retryConfig    retry.RetryConfig
 	key            string // Key for SHA256 signature
+	rateLimit      int    // Maximum concurrent requests
 )
 
-// MetricsBatch holds a collection of metrics to send
+// MetricData represents a single metric to be sent
+type MetricData struct {
+	Metric models.Metrics
+	Type   string // "runtime" or "system"
+}
+
+// MetricsWorkerPool manages concurrent metric sending
+type MetricsWorkerPool struct {
+	jobs       chan MetricData
+	wg         sync.WaitGroup
+	rateLimit  int
+	httpClient *http.Client
+}
+
+// NewMetricsWorkerPool creates a new worker pool
+func NewMetricsWorkerPool(rateLimit int) *MetricsWorkerPool {
+	return &MetricsWorkerPool{
+		jobs:       make(chan MetricData, rateLimit*2), // Buffer to prevent blocking
+		rateLimit:  rateLimit,
+		httpClient: &http.Client{Timeout: 10 * time.Second},
+	}
+}
+
+// Start initializes the worker pool
+func (p *MetricsWorkerPool) Start() {
+	for i := 0; i < p.rateLimit; i++ {
+		p.wg.Add(1)
+		go p.worker(i)
+	}
+	log.Printf("Started worker pool with %d workers", p.rateLimit)
+}
+
+// Stop gracefully shuts down the worker pool
+func (p *MetricsWorkerPool) Stop() {
+	close(p.jobs)
+	p.wg.Wait()
+	log.Printf("Worker pool stopped")
+}
+
+// SubmitMetric adds a metric to the sending queue
+func (p *MetricsWorkerPool) SubmitMetric(metric MetricData) {
+	select {
+	case p.jobs <- metric:
+		// Metric submitted successfully
+	default:
+		log.Printf("Worker pool queue full, dropping metric: %s", metric.Metric.ID)
+	}
+}
+
+// worker processes metrics from the queue
+func (p *MetricsWorkerPool) worker(id int) {
+	defer p.wg.Done()
+	log.Printf("Worker %d started", id)
+
+	for metric := range p.jobs {
+		p.sendMetric(metric)
+	}
+
+	log.Printf("Worker %d stopped", id)
+}
+
+// sendMetric sends a single metric to the server
+func (p *MetricsWorkerPool) sendMetric(metricData MetricData) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	err := retry.Do(ctx, retryConfig, func() error {
+		jsonData, err := json.Marshal(metricData.Metric)
+		if err != nil {
+			return fmt.Errorf("failed to marshal JSON: %w", err)
+		}
+
+		// Compress the JSON data
+		var compressedData bytes.Buffer
+		gzipWriter := gzip.NewWriter(&compressedData)
+		_, err = gzipWriter.Write(jsonData)
+		if err != nil {
+			return fmt.Errorf("failed to compress data: %w", err)
+		}
+		err = gzipWriter.Close()
+		if err != nil {
+			return fmt.Errorf("failed to close gzip writer: %w", err)
+		}
+
+		url := fmt.Sprintf("%s/update/", serverAddress)
+		req, err := http.NewRequest(http.MethodPost, url, &compressedData)
+		if err != nil {
+			return fmt.Errorf("failed to create request: %w", err)
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Encoding", "gzip")
+		req.Header.Set("Accept-Encoding", "gzip")
+
+		// Add hash header if key is configured
+		if key != "" {
+			hashValue := hash.CalculateHash(compressedData.Bytes(), key)
+			req.Header.Set("HashSHA256", hashValue)
+		}
+
+		resp, err := p.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("failed to send metric: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("server returned non-OK status: %s", resp.Status)
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		log.Printf("Failed to send %s metric %s after retries: %v", metricData.Type, metricData.Metric.ID, err)
+	}
+}
+
+// MetricsBatch holds a collection of metrics to send as batch
 type MetricsBatch struct {
 	metrics []models.Metrics
 	mu      sync.Mutex
@@ -90,8 +213,8 @@ func (mb *MetricsBatch) GetAndClear() []models.Metrics {
 	return result
 }
 
-// List of metrics to collect from runtime.MemStats
-var gaugeMetrics = []string{
+// List of runtime metrics to collect
+var runtimeGaugeMetrics = []string{
 	"Alloc", "BuckHashSys", "Frees", "GCCPUFraction", "GCSys", "HeapAlloc",
 	"HeapIdle", "HeapInuse", "HeapObjects", "HeapReleased", "HeapSys",
 	"LastGC", "Lookups", "MCacheInuse", "MCacheSys", "MSpanInuse", "MSpanSys",
@@ -107,6 +230,7 @@ func main() {
 	flagBatchSize := flag.Int("b", 0, "Batch size for metrics (default: 10, 0 = disable batching)")
 	flagDisableRetry := flag.Bool("disable-retry", false, "Disable retry logic for testing")
 	flagKey := flag.String("k", "", "Key for SHA256 signature")
+	flagRateLimit := flag.Int("l", 0, "Rate limit for concurrent requests (default: 10)")
 	flag.Parse()
 
 	if len(flag.Args()) > 0 {
@@ -138,6 +262,20 @@ func main() {
 
 	if key != "" {
 		log.Printf("SHA256 signature enabled")
+	}
+
+	// --- Rate Limit
+	rateLimitEnv := os.Getenv("RATE_LIMIT")
+	if rateLimitEnv != "" {
+		val, err := strconv.Atoi(rateLimitEnv)
+		if err != nil {
+			log.Fatalf("Invalid RATE_LIMIT: %v", err)
+		}
+		rateLimit = val
+	} else if *flagRateLimit != 0 {
+		rateLimit = *flagRateLimit
+	} else {
+		rateLimit = defaultRateLimit
 	}
 
 	// --- Report Interval
@@ -186,136 +324,252 @@ func main() {
 		batchSize = defaultBatchSize
 	}
 
-	log.Printf("Agent starting with server=%s, poll=%v, report=%v, batch_size=%d",
-		serverAddress, pollInterval, reportInterval, batchSize)
+	log.Printf("Agent starting with server=%s, poll=%v, report=%v, batch_size=%d, rate_limit=%d",
+		serverAddress, pollInterval, reportInterval, batchSize, rateLimit)
 
 	// Initialize retry configuration
-	// Use fast retry by default for backward compatibility, full retry only when explicitly enabled
 	if os.Getenv("ENABLE_FULL_RETRY") == "true" {
 		retryConfig = retry.DefaultConfig()
 	} else {
 		retryConfig = retry.FastConfig()
 	}
 
-	// Check if retry should be disabled or shortened (for testing)
 	if *flagDisableRetry || os.Getenv("DISABLE_RETRY") == "true" {
 		retryConfig = retry.NoRetryConfig()
 	} else if os.Getenv("TEST_MODE") == "true" {
-		// Even shorter intervals for testing
-		retryConfig.MaxAttempts = 1 // No retries in test mode
+		retryConfig.MaxAttempts = 1
 		retryConfig.Intervals = []time.Duration{}
 	}
 
 	// --- Main program starts
-	var gauges sync.Map
-	batch := NewMetricsBatch()
+	var runtimeMetrics sync.Map
+	var systemMetrics sync.Map
 
-	tickerPoll := time.NewTicker(pollInterval)
-	defer tickerPoll.Stop()
-	tickerReport := time.NewTicker(reportInterval)
-	defer tickerReport.Stop()
+	// Initialize worker pool
+	workerPool := NewMetricsWorkerPool(rateLimit)
+	workerPool.Start()
+	defer workerPool.Stop()
 
+	// Setup graceful shutdown
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, os.Interrupt)
 
+	// Start metric collection goroutines
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Runtime metrics collection goroutine
+	go collectRuntimeMetrics(ctx, &runtimeMetrics)
+
+	// System metrics collection goroutine
+	go collectSystemMetrics(ctx, &systemMetrics)
+
+	// Metric sending goroutine
+	go sendMetrics(ctx, workerPool, &runtimeMetrics, &systemMetrics)
+
+	// Wait for shutdown signal
+	<-signalChan
+	fmt.Println("Received shutdown signal. Stopping agent...")
+	cancel() // Cancel all goroutines
+
+	// Send final metrics
+	log.Println("Sending final metrics...")
+	sendFinalMetrics(workerPool, &runtimeMetrics, &systemMetrics)
+}
+
+// collectRuntimeMetrics collects Go runtime metrics
+func collectRuntimeMetrics(ctx context.Context, metrics *sync.Map) {
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
 	for {
 		select {
-		case <-tickerPoll.C:
-			pollMetrics(&gauges)
-
-		case <-tickerReport.C:
-			if batchSize > 0 {
-				reportMetricsBatch(&gauges, batch)
-			} else {
-				reportMetricsIndividual(&gauges)
-			}
-
-		case <-signalChan:
-			fmt.Println("Received shutdown signal. Sending final metrics...")
-			if batchSize > 0 {
-				reportMetricsBatch(&gauges, batch)
-			} else {
-				reportMetricsIndividual(&gauges)
-			}
+		case <-ctx.Done():
 			return
+		case <-ticker.C:
+			var memStats runtime.MemStats
+			runtime.ReadMemStats(&memStats)
+
+			// Update runtime metrics
+			for _, metric := range runtimeGaugeMetrics {
+				switch metric {
+				case "Alloc":
+					metrics.Store(metric, float64(memStats.Alloc))
+				case "BuckHashSys":
+					metrics.Store(metric, float64(memStats.BuckHashSys))
+				case "Frees":
+					metrics.Store(metric, float64(memStats.Frees))
+				case "GCCPUFraction":
+					metrics.Store(metric, memStats.GCCPUFraction)
+				case "GCSys":
+					metrics.Store(metric, float64(memStats.GCSys))
+				case "HeapAlloc":
+					metrics.Store(metric, float64(memStats.HeapAlloc))
+				case "HeapIdle":
+					metrics.Store(metric, float64(memStats.HeapIdle))
+				case "HeapInuse":
+					metrics.Store(metric, float64(memStats.HeapInuse))
+				case "HeapObjects":
+					metrics.Store(metric, float64(memStats.HeapObjects))
+				case "HeapReleased":
+					metrics.Store(metric, float64(memStats.HeapReleased))
+				case "HeapSys":
+					metrics.Store(metric, float64(memStats.HeapSys))
+				case "LastGC":
+					metrics.Store(metric, float64(memStats.LastGC))
+				case "Lookups":
+					metrics.Store(metric, float64(memStats.Lookups))
+				case "MCacheInuse":
+					metrics.Store(metric, float64(memStats.MCacheInuse))
+				case "MCacheSys":
+					metrics.Store(metric, float64(memStats.MCacheSys))
+				case "MSpanInuse":
+					metrics.Store(metric, float64(memStats.MSpanInuse))
+				case "MSpanSys":
+					metrics.Store(metric, float64(memStats.MSpanSys))
+				case "Mallocs":
+					metrics.Store(metric, float64(memStats.Mallocs))
+				case "NextGC":
+					metrics.Store(metric, float64(memStats.NextGC))
+				case "NumForcedGC":
+					metrics.Store(metric, float64(memStats.NumForcedGC))
+				case "NumGC":
+					metrics.Store(metric, float64(memStats.NumGC))
+				case "OtherSys":
+					metrics.Store(metric, float64(memStats.OtherSys))
+				case "PauseTotalNs":
+					metrics.Store(metric, float64(memStats.PauseTotalNs))
+				case "StackInuse":
+					metrics.Store(metric, float64(memStats.StackInuse))
+				case "StackSys":
+					metrics.Store(metric, float64(memStats.StackSys))
+				case "Sys":
+					metrics.Store(metric, float64(memStats.Sys))
+				case "TotalAlloc":
+					metrics.Store(metric, float64(memStats.TotalAlloc))
+				}
+			}
+
+			// Add random metric
+			metrics.Store("RandomValue", rand.Float64())
+
+			// Increment poll count
+			pollCount++
 		}
 	}
 }
 
-func pollMetrics(gauges *sync.Map) {
-	var memStats runtime.MemStats
-	runtime.ReadMemStats(&memStats)
+// collectSystemMetrics collects system metrics using gopsutil
+func collectSystemMetrics(ctx context.Context, metrics *sync.Map) {
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
 
-	// Update runtime metrics
-	for _, metric := range gaugeMetrics {
-		switch metric {
-		case "Alloc":
-			gauges.Store(metric, float64(memStats.Alloc))
-		case "BuckHashSys":
-			gauges.Store(metric, float64(memStats.BuckHashSys))
-		case "Frees":
-			gauges.Store(metric, float64(memStats.Frees))
-		case "GCCPUFraction":
-			gauges.Store(metric, memStats.GCCPUFraction)
-		case "GCSys":
-			gauges.Store(metric, float64(memStats.GCSys))
-		case "HeapAlloc":
-			gauges.Store(metric, float64(memStats.HeapAlloc))
-		case "HeapIdle":
-			gauges.Store(metric, float64(memStats.HeapIdle))
-		case "HeapInuse":
-			gauges.Store(metric, float64(memStats.HeapInuse))
-		case "HeapObjects":
-			gauges.Store(metric, float64(memStats.HeapObjects))
-		case "HeapReleased":
-			gauges.Store(metric, float64(memStats.HeapReleased))
-		case "HeapSys":
-			gauges.Store(metric, float64(memStats.HeapSys))
-		case "LastGC":
-			gauges.Store(metric, float64(memStats.LastGC))
-		case "Lookups":
-			gauges.Store(metric, float64(memStats.Lookups))
-		case "MCacheInuse":
-			gauges.Store(metric, float64(memStats.MCacheInuse))
-		case "MCacheSys":
-			gauges.Store(metric, float64(memStats.MCacheSys))
-		case "MSpanInuse":
-			gauges.Store(metric, float64(memStats.MSpanInuse))
-		case "MSpanSys":
-			gauges.Store(metric, float64(memStats.MSpanSys))
-		case "Mallocs":
-			gauges.Store(metric, float64(memStats.Mallocs))
-		case "NextGC":
-			gauges.Store(metric, float64(memStats.NextGC))
-		case "NumForcedGC":
-			gauges.Store(metric, float64(memStats.NumForcedGC))
-		case "NumGC":
-			gauges.Store(metric, float64(memStats.NumGC))
-		case "OtherSys":
-			gauges.Store(metric, float64(memStats.OtherSys))
-		case "PauseTotalNs":
-			gauges.Store(metric, float64(memStats.PauseTotalNs))
-		case "StackInuse":
-			gauges.Store(metric, float64(memStats.StackInuse))
-		case "StackSys":
-			gauges.Store(metric, float64(memStats.StackSys))
-		case "Sys":
-			gauges.Store(metric, float64(memStats.Sys))
-		case "TotalAlloc":
-			gauges.Store(metric, float64(memStats.TotalAlloc))
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Collect memory metrics
+			if memInfo, err := mem.VirtualMemory(); err == nil {
+				metrics.Store("TotalMemory", float64(memInfo.Total))
+				metrics.Store("FreeMemory", float64(memInfo.Free))
+			}
+
+			// Collect CPU utilization for each CPU
+			if cpuPercents, err := cpu.Percent(time.Second, true); err == nil {
+				for i, percent := range cpuPercents {
+					metricName := fmt.Sprintf("CPUutilization%d", i+1)
+					metrics.Store(metricName, percent)
+				}
+			}
 		}
 	}
-
-	// Add random metric
-	gauges.Store("RandomValue", rand.Float64())
-
-	// Increment poll count
-	pollCount++
 }
 
-func reportMetricsBatch(gauges *sync.Map, batch *MetricsBatch) {
-	// Add all gauge metrics to batch
-	gauges.Range(func(key, value any) bool {
+// sendMetrics sends collected metrics using the worker pool
+func sendMetrics(ctx context.Context, workerPool *MetricsWorkerPool, runtimeMetrics, systemMetrics *sync.Map) {
+	ticker := time.NewTicker(reportInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if batchSize > 0 {
+				sendMetricsBatch(workerPool, runtimeMetrics, systemMetrics)
+			} else {
+				sendMetricsIndividual(workerPool, runtimeMetrics, systemMetrics)
+			}
+		}
+	}
+}
+
+// sendMetricsIndividual sends each metric individually using the worker pool
+func sendMetricsIndividual(workerPool *MetricsWorkerPool, runtimeMetrics, systemMetrics *sync.Map) {
+	// Send runtime metrics
+	runtimeMetrics.Range(func(key, value any) bool {
+		name, _ := key.(string)
+		val, _ := value.(float64)
+
+		metric := models.Metrics{
+			ID:    name,
+			MType: "gauge",
+			Value: &val,
+		}
+
+		workerPool.SubmitMetric(MetricData{
+			Metric: metric,
+			Type:   "runtime",
+		})
+		return true
+	})
+
+	// Send system metrics
+	systemMetrics.Range(func(key, value any) bool {
+		name, _ := key.(string)
+		val, _ := value.(float64)
+
+		metric := models.Metrics{
+			ID:    name,
+			MType: "gauge",
+			Value: &val,
+		}
+
+		workerPool.SubmitMetric(MetricData{
+			Metric: metric,
+			Type:   "system",
+		})
+		return true
+	})
+
+	// Send counter metric
+	counter := models.Metrics{
+		ID:    "PollCount",
+		MType: "counter",
+		Delta: &pollCount,
+	}
+
+	workerPool.SubmitMetric(MetricData{
+		Metric: counter,
+		Type:   "runtime",
+	})
+}
+
+// sendMetricsBatch sends metrics in batches (existing logic adapted)
+func sendMetricsBatch(workerPool *MetricsWorkerPool, runtimeMetrics, systemMetrics *sync.Map) {
+	batch := NewMetricsBatch()
+
+	// Add runtime metrics to batch
+	runtimeMetrics.Range(func(key, value any) bool {
+		name, _ := key.(string)
+		val, _ := value.(float64)
+		batch.AddGauge(name, val)
+		return true
+	})
+
+	// Add system metrics to batch
+	systemMetrics.Range(func(key, value any) bool {
 		name, _ := key.(string)
 		val, _ := value.(float64)
 		batch.AddGauge(name, val)
@@ -330,14 +584,12 @@ func reportMetricsBatch(gauges *sync.Map, batch *MetricsBatch) {
 	if len(metrics) > 0 {
 		if err := sendBatch(metrics); err != nil {
 			log.Printf("Failed to send batch: %v", err)
-			// Fallback to individual sending
-			client := &http.Client{}
+			// Fallback to individual sending via worker pool
 			for _, metric := range metrics {
-				if metric.MType == "gauge" && metric.Value != nil {
-					sendMetricJSON(client, "gauge", metric.ID, *metric.Value, 0)
-				} else if metric.MType == "counter" && metric.Delta != nil {
-					sendMetricJSON(client, "counter", metric.ID, 0, *metric.Delta)
-				}
+				workerPool.SubmitMetric(MetricData{
+					Metric: metric,
+					Type:   "batch_fallback",
+				})
 			}
 		} else {
 			log.Printf("Successfully sent batch of %d metrics", len(metrics))
@@ -345,7 +597,16 @@ func reportMetricsBatch(gauges *sync.Map, batch *MetricsBatch) {
 	}
 }
 
-// sendBatch sends a batch of metrics using the /updates/ endpoint
+// sendFinalMetrics sends final metrics before shutdown
+func sendFinalMetrics(workerPool *MetricsWorkerPool, runtimeMetrics, systemMetrics *sync.Map) {
+	if batchSize > 0 {
+		sendMetricsBatch(workerPool, runtimeMetrics, systemMetrics)
+	} else {
+		sendMetricsIndividual(workerPool, runtimeMetrics, systemMetrics)
+	}
+}
+
+// sendBatch sends a batch of metrics using the /updates/ endpoint (unchanged)
 func sendBatch(metrics []models.Metrics) error {
 	if len(metrics) == 0 {
 		return nil // Don't send empty batches
@@ -401,110 +662,4 @@ func sendBatch(metrics []models.Metrics) error {
 
 		return nil
 	})
-}
-
-func reportMetricsIndividual(gauges *sync.Map) {
-	client := &http.Client{}
-
-	gauges.Range(func(key, value any) bool {
-		name, _ := key.(string)
-		val, _ := value.(float64)
-		sendMetricJSON(client, "gauge", name, val, 0)
-		return true
-	})
-
-	sendMetricJSON(client, "counter", "PollCount", 0, pollCount)
-}
-
-func sendMetric(client *http.Client, metricType, metricName, metricValue string) {
-	url := fmt.Sprintf("%s/update/%s/%s/%s", serverAddress, metricType, metricName, metricValue)
-
-	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(""))
-	if err != nil {
-		log.Printf("Failed to create request: %v", err)
-		return
-	}
-
-	req.Header.Set("Content-Type", "text/plain")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Printf("Failed to send metric: %v", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("Server returned non-OK status: %s", resp.Status)
-	}
-}
-
-// sendMetricJSON sends metrics using the new JSON API with gzip compression
-func sendMetricJSON(client *http.Client, metricType, metricName string, gaugeValue float64, counterValue int64) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	err := retry.Do(ctx, retryConfig, func() error {
-		var metric models.Metrics
-		metric.ID = metricName
-		metric.MType = metricType
-
-		switch metricType {
-		case "gauge":
-			metric.Value = &gaugeValue
-		case "counter":
-			metric.Delta = &counterValue
-		default:
-			return fmt.Errorf("unknown metric type: %s", metricType)
-		}
-
-		jsonData, err := json.Marshal(metric)
-		if err != nil {
-			return fmt.Errorf("failed to marshal JSON: %w", err)
-		}
-
-		// Compress the JSON data
-		var compressedData bytes.Buffer
-		gzipWriter := gzip.NewWriter(&compressedData)
-		_, err = gzipWriter.Write(jsonData)
-		if err != nil {
-			return fmt.Errorf("failed to compress data: %w", err)
-		}
-		err = gzipWriter.Close()
-		if err != nil {
-			return fmt.Errorf("failed to close gzip writer: %w", err)
-		}
-
-		url := fmt.Sprintf("%s/update/", serverAddress)
-		req, err := http.NewRequest(http.MethodPost, url, &compressedData)
-		if err != nil {
-			return fmt.Errorf("failed to create request: %w", err)
-		}
-
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Content-Encoding", "gzip")
-		req.Header.Set("Accept-Encoding", "gzip")
-
-		// Add hash header if key is configured
-		if key != "" {
-			hashValue := hash.CalculateHash(compressedData.Bytes(), key)
-			req.Header.Set("HashSHA256", hashValue)
-		}
-
-		resp, err := client.Do(req)
-		if err != nil {
-			return fmt.Errorf("failed to send metric: %w", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("server returned non-OK status: %s", resp.Status)
-		}
-
-		return nil
-	})
-
-	if err != nil {
-		log.Printf("Failed to send metric %s after retries: %v", metricName, err)
-	}
 }
