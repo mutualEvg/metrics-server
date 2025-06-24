@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mutualEvg/metrics-server/internal/hash"
 	"github.com/mutualEvg/metrics-server/internal/models"
 	"github.com/mutualEvg/metrics-server/internal/retry"
 )
@@ -36,6 +37,7 @@ var (
 	batchSize      int
 	pollCount      int64
 	retryConfig    retry.RetryConfig
+	key            string // Key for SHA256 signature
 )
 
 // MetricsBatch holds a collection of metrics to send
@@ -104,6 +106,7 @@ func main() {
 	flagPoll := flag.Int("p", 0, "Poll interval in seconds (default: 2)")
 	flagBatchSize := flag.Int("b", 0, "Batch size for metrics (default: 10, 0 = disable batching)")
 	flagDisableRetry := flag.Bool("disable-retry", false, "Disable retry logic for testing")
+	flagKey := flag.String("k", "", "Key for SHA256 signature")
 	flag.Parse()
 
 	if len(flag.Args()) > 0 {
@@ -123,6 +126,18 @@ func main() {
 
 	if !strings.HasPrefix(serverAddress, "http://") && !strings.HasPrefix(serverAddress, "https://") {
 		serverAddress = "http://" + serverAddress
+	}
+
+	// --- Key
+	keyEnv := os.Getenv("KEY")
+	if keyEnv != "" {
+		key = keyEnv
+	} else if *flagKey != "" {
+		key = *flagKey
+	}
+
+	if key != "" {
+		log.Printf("SHA256 signature enabled")
 	}
 
 	// --- Report Interval
@@ -366,6 +381,12 @@ func sendBatch(metrics []models.Metrics) error {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Content-Encoding", "gzip")
 
+		// Add hash header if key is configured
+		if key != "" {
+			hashValue := hash.CalculateHash(compressedData.Bytes(), key)
+			req.Header.Set("HashSHA256", hashValue)
+		}
+
 		// Send request
 		client := &http.Client{Timeout: 10 * time.Second}
 		resp, err := client.Do(req)
@@ -463,6 +484,12 @@ func sendMetricJSON(client *http.Client, metricType, metricName string, gaugeVal
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Content-Encoding", "gzip")
 		req.Header.Set("Accept-Encoding", "gzip")
+
+		// Add hash header if key is configured
+		if key != "" {
+			hashValue := hash.CalculateHash(compressedData.Bytes(), key)
+			req.Header.Set("HashSHA256", hashValue)
+		}
 
 		resp, err := client.Do(req)
 		if err != nil {

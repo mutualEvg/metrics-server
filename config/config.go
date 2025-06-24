@@ -17,7 +17,8 @@ type Config struct {
 	FileStoragePath string
 	Restore         bool
 	DatabaseDSN     string
-	UseFileStorage  bool // Indicates if file storage was explicitly configured
+	UseFileStorage  bool   // Indicates if file storage was explicitly configured
+	Key             string // Key for SHA256 signature verification
 }
 
 const (
@@ -38,6 +39,7 @@ func Load() *Config {
 	flagFileStoragePath := flag.String("f", "", "File storage path")
 	flagRestore := flag.Bool("r", false, "Restore previously stored values")
 	flagDatabaseDSN := flag.String("d", "", "Database connection string")
+	flagKey := flag.String("k", "", "Key for SHA256 signature")
 	flag.Parse()
 
 	addr := resolveString("ADDRESS", *flagAddress, defaultServerAddress)
@@ -46,6 +48,7 @@ func Load() *Config {
 	storeInterval := resolveInt("STORE_INTERVAL", *flagStoreInterval, defaultStoreSeconds)
 	databaseDSN := resolveString("DATABASE_DSN", *flagDatabaseDSN, defaultDatabaseDSN)
 	restore := resolveBool("RESTORE", *flagRestore, defaultRestore)
+	key := resolveString("KEY", *flagKey, "")
 
 	// Determine if file storage is explicitly configured
 	var fileStoragePath string
@@ -72,6 +75,7 @@ func Load() *Config {
 		Restore:         restore,
 		DatabaseDSN:     databaseDSN,
 		UseFileStorage:  useFileStorage,
+		Key:             key,
 	}
 }
 

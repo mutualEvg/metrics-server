@@ -102,6 +102,13 @@ func main() {
 	r.Use(loggingMiddleware)
 	r.Use(gzipmw.GzipMiddleware)
 
+	// Add hash middleware if key is configured
+	if cfg.Key != "" {
+		log.Info().Msg("SHA256 hash verification enabled")
+		r.Use(gzipmw.HashVerification(cfg.Key))
+		r.Use(gzipmw.ResponseHash(cfg.Key))
+	}
+
 	// Database ping handler
 	r.Get("/ping", handlers.PingHandler(dbStorage))
 
