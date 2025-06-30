@@ -73,6 +73,7 @@ func TestCollectRuntimeMetrics_With_Channels(t *testing.T) {
 	receivedCount := 0
 	timeout := time.After(800 * time.Millisecond)
 
+runtimeLoop:
 	for receivedCount < 5 { // Expect at least 5 metrics
 		select {
 		case metric := <-metricCollector.GetRuntimeChan():
@@ -85,7 +86,7 @@ func TestCollectRuntimeMetrics_With_Channels(t *testing.T) {
 			}
 		case <-timeout:
 			t.Logf("Timeout waiting for metrics, received %d", receivedCount)
-			break
+			break runtimeLoop
 		}
 	}
 
