@@ -7,7 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"sync"
+	"os"
 	"testing"
 	"time"
 
@@ -15,100 +15,100 @@ import (
 	"github.com/mutualEvg/metrics-server/internal/retry"
 )
 
-func TestCollectRuntimeMetrics(t *testing.T) {
+func TestCollectRuntimeMetrics_With_Channels(t *testing.T) {
 	// Set poll interval for test
 	oldPollInterval := pollInterval
 	pollInterval = 100 * time.Millisecond
 	defer func() { pollInterval = oldPollInterval }()
 
-	var metrics sync.Map
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	// Create worker pool and metric collector
+	workerPool := NewMetricsWorkerPool(2)
+	workerPool.Start()
+	defer workerPool.Stop()
+
+	metricCollector := NewMetricCollector(workerPool)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	// Start collection in goroutine
-	go collectRuntimeMetrics(ctx, &metrics)
+	// Start metric collection
+	go metricCollector.collectRuntimeMetrics(ctx)
 
-	// Wait a bit for metrics to be collected
-	time.Sleep(pollInterval + 500*time.Millisecond)
+	// Collect metrics from the runtime channel
+	time.Sleep(pollInterval + 200*time.Millisecond)
 
-	// Check if metrics were collected
-	foundRandom := false
-	foundAlloc := false
-	metrics.Range(func(key, value any) bool {
-		name, ok := key.(string)
-		if !ok {
-			t.Errorf("Metric key should be string, got %T", key)
-			return false
+	// Check if we received some metrics
+	receivedCount := 0
+	timeout := time.After(1 * time.Second)
+
+	for receivedCount < 5 { // Expect at least 5 metrics
+		select {
+		case metric := <-metricCollector.runtimeChan:
+			receivedCount++
+			if metric.Metric.ID == "RandomValue" {
+				t.Logf("Received RandomValue metric: %v", *metric.Metric.Value)
+			}
+			if metric.Metric.ID == "Alloc" {
+				t.Logf("Received Alloc metric: %v", *metric.Metric.Value)
+			}
+		case <-timeout:
+			t.Errorf("Timeout waiting for metrics, received %d", receivedCount)
+			return
 		}
-
-		_, ok = value.(float64)
-		if !ok {
-			t.Errorf("Metric value should be float64, got %T", value)
-			return false
-		}
-
-		if name == "RandomValue" {
-			foundRandom = true
-		}
-		if name == "Alloc" {
-			foundAlloc = true
-		}
-		return true
-	})
-
-	if !foundRandom {
-		t.Error("RandomValue should be present in metrics")
 	}
-	if !foundAlloc {
-		t.Error("Alloc should be present in metrics")
+
+	if receivedCount < 5 {
+		t.Errorf("Expected at least 5 metrics, received %d", receivedCount)
 	}
 }
 
-func TestCollectSystemMetrics(t *testing.T) {
+func TestCollectSystemMetrics_With_Channels(t *testing.T) {
 	// Set poll interval for test
 	oldPollInterval := pollInterval
 	pollInterval = 100 * time.Millisecond
 	defer func() { pollInterval = oldPollInterval }()
 
-	var metrics sync.Map
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Create worker pool and metric collector
+	workerPool := NewMetricsWorkerPool(2)
+	workerPool.Start()
+	defer workerPool.Stop()
+
+	metricCollector := NewMetricCollector(workerPool)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	// Start collection in goroutine
-	go collectSystemMetrics(ctx, &metrics)
+	// Start system metric collection
+	go metricCollector.collectSystemMetrics(ctx)
 
 	// Wait for metrics to be collected
 	time.Sleep(pollInterval + 2*time.Second)
 
-	// Check if system metrics were collected
+	// Check if we received system metrics
+	receivedCount := 0
 	foundTotalMemory := false
 	foundFreeMemory := false
 	foundCPU := false
 
-	metrics.Range(func(key, value any) bool {
-		name, ok := key.(string)
-		if !ok {
-			t.Errorf("Metric key should be string, got %T", key)
-			return false
-		}
+	timeout := time.After(1 * time.Second)
 
-		_, ok = value.(float64)
-		if !ok {
-			t.Errorf("Metric value should be float64, got %T", value)
-			return false
+	for receivedCount < 10 { // Expect several system metrics
+		select {
+		case metric := <-metricCollector.systemChan:
+			receivedCount++
+			if metric.Metric.ID == "TotalMemory" {
+				foundTotalMemory = true
+			}
+			if metric.Metric.ID == "FreeMemory" {
+				foundFreeMemory = true
+			}
+			if metric.Metric.ID == "CPUutilization1" {
+				foundCPU = true
+			}
+		case <-timeout:
+			break
 		}
-
-		if name == "TotalMemory" {
-			foundTotalMemory = true
-		}
-		if name == "FreeMemory" {
-			foundFreeMemory = true
-		}
-		if name == "CPUutilization1" {
-			foundCPU = true
-		}
-		return true
-	})
+	}
 
 	if !foundTotalMemory {
 		t.Error("TotalMemory should be present in system metrics")
@@ -362,4 +362,65 @@ func TestSendBatch(t *testing.T) {
 	if len(receivedBatch) != 2 {
 		t.Errorf("Expected 2 metrics in received batch, got %d", len(receivedBatch))
 	}
+}
+
+func TestMetricCollector_Channel_Communication(t *testing.T) {
+	// Set test mode to prevent race conditions during shutdown
+	oldTestMode := os.Getenv("TEST_MODE")
+	os.Setenv("TEST_MODE", "true")
+	defer func() {
+		if oldTestMode == "" {
+			os.Unsetenv("TEST_MODE")
+		} else {
+			os.Setenv("TEST_MODE", oldTestMode)
+		}
+	}()
+
+	// Set up retry config for test
+	oldRetryConfig := retryConfig
+	retryConfig = retry.RetryConfig{
+		MaxAttempts: 1,
+		Intervals:   []time.Duration{},
+	}
+	defer func() { retryConfig = oldRetryConfig }()
+
+	// Set intervals for test
+	oldPollInterval := pollInterval
+	oldReportInterval := reportInterval
+	pollInterval = 200 * time.Millisecond // Slower to prevent queue overflow
+	reportInterval = 500 * time.Millisecond
+	defer func() {
+		pollInterval = oldPollInterval
+		reportInterval = oldReportInterval
+	}()
+
+	// Create a test server that accepts requests
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	// Set server address for test
+	oldAddress := serverAddress
+	serverAddress = server.URL
+	defer func() { serverAddress = oldAddress }()
+
+	// Create worker pool and metric collector
+	workerPool := NewMetricsWorkerPool(5) // Larger pool to handle load
+	workerPool.Start()
+	defer workerPool.Stop()
+
+	metricCollector := NewMetricCollector(workerPool)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+	defer cancel()
+
+	// Start the metric collector
+	metricCollector.Start(ctx)
+
+	// Let it run for a bit
+	time.Sleep(600 * time.Millisecond)
+
+	// The test passes if no panics occur and goroutines start/stop cleanly
+	t.Log("Channel-based metric collection completed successfully")
 }

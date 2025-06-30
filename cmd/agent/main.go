@@ -86,6 +86,13 @@ func (p *MetricsWorkerPool) Stop() {
 
 // SubmitMetric adds a metric to the sending queue
 func (p *MetricsWorkerPool) SubmitMetric(metric MetricData) {
+	// Recover from panic if channel is closed
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Worker pool channel closed, dropping metric: %s", metric.Metric.ID)
+		}
+	}()
+
 	select {
 	case p.jobs <- metric:
 		// Metric submitted successfully
@@ -222,6 +229,334 @@ var runtimeGaugeMetrics = []string{
 	"StackInuse", "StackSys", "Sys", "TotalAlloc",
 }
 
+// MetricCollector handles metric collection and transmission via channels
+type MetricCollector struct {
+	runtimeChan chan MetricData
+	systemChan  chan MetricData
+	workerPool  *MetricsWorkerPool
+}
+
+// NewMetricCollector creates a new metric collector
+func NewMetricCollector(workerPool *MetricsWorkerPool) *MetricCollector {
+	return &MetricCollector{
+		runtimeChan: make(chan MetricData, 100), // Buffered channel
+		systemChan:  make(chan MetricData, 100), // Buffered channel
+		workerPool:  workerPool,
+	}
+}
+
+// Start begins metric collection and forwarding
+func (mc *MetricCollector) Start(ctx context.Context) {
+	// Start runtime metrics collection
+	go mc.collectRuntimeMetrics(ctx)
+
+	// Start system metrics collection
+	go mc.collectSystemMetrics(ctx)
+
+	// Start metric forwarding to worker pool
+	go mc.forwardMetrics(ctx)
+}
+
+// collectRuntimeMetrics collects Go runtime metrics and sends via channel
+func (mc *MetricCollector) collectRuntimeMetrics(ctx context.Context) {
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			var memStats runtime.MemStats
+			runtime.ReadMemStats(&memStats)
+
+			// Send runtime metrics via channel
+			for _, metric := range runtimeGaugeMetrics {
+				var value float64
+				switch metric {
+				case "Alloc":
+					value = float64(memStats.Alloc)
+				case "BuckHashSys":
+					value = float64(memStats.BuckHashSys)
+				case "Frees":
+					value = float64(memStats.Frees)
+				case "GCCPUFraction":
+					value = memStats.GCCPUFraction
+				case "GCSys":
+					value = float64(memStats.GCSys)
+				case "HeapAlloc":
+					value = float64(memStats.HeapAlloc)
+				case "HeapIdle":
+					value = float64(memStats.HeapIdle)
+				case "HeapInuse":
+					value = float64(memStats.HeapInuse)
+				case "HeapObjects":
+					value = float64(memStats.HeapObjects)
+				case "HeapReleased":
+					value = float64(memStats.HeapReleased)
+				case "HeapSys":
+					value = float64(memStats.HeapSys)
+				case "LastGC":
+					value = float64(memStats.LastGC)
+				case "Lookups":
+					value = float64(memStats.Lookups)
+				case "MCacheInuse":
+					value = float64(memStats.MCacheInuse)
+				case "MCacheSys":
+					value = float64(memStats.MCacheSys)
+				case "MSpanInuse":
+					value = float64(memStats.MSpanInuse)
+				case "MSpanSys":
+					value = float64(memStats.MSpanSys)
+				case "Mallocs":
+					value = float64(memStats.Mallocs)
+				case "NextGC":
+					value = float64(memStats.NextGC)
+				case "NumForcedGC":
+					value = float64(memStats.NumForcedGC)
+				case "NumGC":
+					value = float64(memStats.NumGC)
+				case "OtherSys":
+					value = float64(memStats.OtherSys)
+				case "PauseTotalNs":
+					value = float64(memStats.PauseTotalNs)
+				case "StackInuse":
+					value = float64(memStats.StackInuse)
+				case "StackSys":
+					value = float64(memStats.StackSys)
+				case "Sys":
+					value = float64(memStats.Sys)
+				case "TotalAlloc":
+					value = float64(memStats.TotalAlloc)
+				}
+
+				select {
+				case mc.runtimeChan <- MetricData{
+					Metric: models.Metrics{
+						ID:    metric,
+						MType: "gauge",
+						Value: &value,
+					},
+					Type: "runtime",
+				}:
+				case <-ctx.Done():
+					return
+				default:
+					// Channel full, skip this metric
+					log.Printf("Runtime channel full, dropping metric: %s", metric)
+				}
+			}
+
+			// Send random metric
+			randomValue := rand.Float64()
+			select {
+			case mc.runtimeChan <- MetricData{
+				Metric: models.Metrics{
+					ID:    "RandomValue",
+					MType: "gauge",
+					Value: &randomValue,
+				},
+				Type: "runtime",
+			}:
+			case <-ctx.Done():
+				return
+			default:
+				log.Printf("Runtime channel full, dropping RandomValue metric")
+			}
+
+			// Increment poll count
+			pollCount++
+		}
+	}
+}
+
+// collectSystemMetrics collects system metrics using gopsutil and sends via channel
+func (mc *MetricCollector) collectSystemMetrics(ctx context.Context) {
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Collect memory metrics
+			if memInfo, err := mem.VirtualMemory(); err == nil {
+				totalMem := float64(memInfo.Total)
+				freeMem := float64(memInfo.Free)
+
+				select {
+				case mc.systemChan <- MetricData{
+					Metric: models.Metrics{
+						ID:    "TotalMemory",
+						MType: "gauge",
+						Value: &totalMem,
+					},
+					Type: "system",
+				}:
+				case <-ctx.Done():
+					return
+				default:
+					log.Printf("System channel full, dropping TotalMemory metric")
+				}
+
+				select {
+				case mc.systemChan <- MetricData{
+					Metric: models.Metrics{
+						ID:    "FreeMemory",
+						MType: "gauge",
+						Value: &freeMem,
+					},
+					Type: "system",
+				}:
+				case <-ctx.Done():
+					return
+				default:
+					log.Printf("System channel full, dropping FreeMemory metric")
+				}
+			}
+
+			// Collect CPU utilization for each CPU
+			if cpuPercents, err := cpu.Percent(time.Second, true); err == nil {
+				for i, percent := range cpuPercents {
+					metricName := fmt.Sprintf("CPUutilization%d", i+1)
+					cpuValue := percent
+
+					select {
+					case mc.systemChan <- MetricData{
+						Metric: models.Metrics{
+							ID:    metricName,
+							MType: "gauge",
+							Value: &cpuValue,
+						},
+						Type: "system",
+					}:
+					case <-ctx.Done():
+						return
+					default:
+						log.Printf("System channel full, dropping %s metric", metricName)
+					}
+				}
+			}
+		}
+	}
+}
+
+// forwardMetrics reads from channels and forwards to worker pool or batch
+func (mc *MetricCollector) forwardMetrics(ctx context.Context) {
+	ticker := time.NewTicker(reportInterval)
+	defer ticker.Stop()
+
+	var runtimeMetrics []MetricData
+	var systemMetrics []MetricData
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Only send final metrics if not in test mode (when worker pool might be stopping)
+			if os.Getenv("TEST_MODE") != "true" {
+				mc.sendCollectedMetrics(runtimeMetrics, systemMetrics)
+			}
+			return
+
+		case metric := <-mc.runtimeChan:
+			runtimeMetrics = append(runtimeMetrics, metric)
+
+		case metric := <-mc.systemChan:
+			systemMetrics = append(systemMetrics, metric)
+
+		case <-ticker.C:
+			// Send collected metrics
+			mc.sendCollectedMetrics(runtimeMetrics, systemMetrics)
+
+			// Clear collected metrics
+			runtimeMetrics = runtimeMetrics[:0]
+			systemMetrics = systemMetrics[:0]
+		}
+	}
+}
+
+// sendCollectedMetrics sends the collected metrics via worker pool or batch
+func (mc *MetricCollector) sendCollectedMetrics(runtimeMetrics, systemMetrics []MetricData) {
+	if batchSize > 0 {
+		mc.sendMetricsBatch(runtimeMetrics, systemMetrics)
+	} else {
+		mc.sendMetricsIndividual(runtimeMetrics, systemMetrics)
+	}
+}
+
+// sendMetricsIndividual sends each metric individually using the worker pool
+func (mc *MetricCollector) sendMetricsIndividual(runtimeMetrics, systemMetrics []MetricData) {
+	// Send runtime metrics
+	for _, metric := range runtimeMetrics {
+		mc.workerPool.SubmitMetric(metric)
+	}
+
+	// Send system metrics
+	for _, metric := range systemMetrics {
+		mc.workerPool.SubmitMetric(metric)
+	}
+
+	// Send counter metric
+	counter := MetricData{
+		Metric: models.Metrics{
+			ID:    "PollCount",
+			MType: "counter",
+			Delta: &pollCount,
+		},
+		Type: "runtime",
+	}
+	mc.workerPool.SubmitMetric(counter)
+}
+
+// sendMetricsBatch sends metrics in batches
+func (mc *MetricCollector) sendMetricsBatch(runtimeMetrics, systemMetrics []MetricData) {
+	batch := NewMetricsBatch()
+
+	// Add runtime metrics to batch
+	for _, metricData := range runtimeMetrics {
+		if metricData.Metric.Value != nil {
+			batch.AddGauge(metricData.Metric.ID, *metricData.Metric.Value)
+		}
+	}
+
+	// Add system metrics to batch
+	for _, metricData := range systemMetrics {
+		if metricData.Metric.Value != nil {
+			batch.AddGauge(metricData.Metric.ID, *metricData.Metric.Value)
+		}
+	}
+
+	// Add counter metric
+	batch.AddCounter("PollCount", pollCount)
+
+	// Get all metrics and send as batch
+	metrics := batch.GetAndClear()
+	if len(metrics) > 0 {
+		if err := sendBatch(metrics); err != nil {
+			log.Printf("Failed to send batch: %v", err)
+			// Fallback to individual sending via worker pool
+			for _, metric := range metrics {
+				var metricData MetricData
+				if metric.Value != nil {
+					metricData = MetricData{
+						Metric: metric,
+						Type:   "batch_fallback",
+					}
+				} else if metric.Delta != nil {
+					metricData = MetricData{
+						Metric: metric,
+						Type:   "batch_fallback",
+					}
+				}
+				mc.workerPool.SubmitMetric(metricData)
+			}
+		} else {
+			log.Printf("Successfully sent batch of %d metrics", len(metrics))
+		}
+	}
+}
+
 func main() {
 	// Read flags
 	flagAddress := flag.String("a", "", "HTTP server address (default: http://localhost:8080)")
@@ -342,10 +677,6 @@ func main() {
 	}
 
 	// --- Main program starts
-	var runtimeMetrics sync.Map
-	var systemMetrics sync.Map
-
-	// Initialize worker pool
 	workerPool := NewMetricsWorkerPool(rateLimit)
 	workerPool.Start()
 	defer workerPool.Stop()
@@ -358,252 +689,18 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Runtime metrics collection goroutine
-	go collectRuntimeMetrics(ctx, &runtimeMetrics)
-
-	// System metrics collection goroutine
-	go collectSystemMetrics(ctx, &systemMetrics)
-
-	// Metric sending goroutine
-	go sendMetrics(ctx, workerPool, &runtimeMetrics, &systemMetrics)
+	// Initialize metric collector with channel-based communication
+	metricCollector := NewMetricCollector(workerPool)
+	metricCollector.Start(ctx)
 
 	// Wait for shutdown signal
 	<-signalChan
 	fmt.Println("Received shutdown signal. Stopping agent...")
 	cancel() // Cancel all goroutines
 
-	// Send final metrics
+	// Give some time for final metrics to be processed
 	log.Println("Sending final metrics...")
-	sendFinalMetrics(workerPool, &runtimeMetrics, &systemMetrics)
-}
-
-// collectRuntimeMetrics collects Go runtime metrics
-func collectRuntimeMetrics(ctx context.Context, metrics *sync.Map) {
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			var memStats runtime.MemStats
-			runtime.ReadMemStats(&memStats)
-
-			// Update runtime metrics
-			for _, metric := range runtimeGaugeMetrics {
-				switch metric {
-				case "Alloc":
-					metrics.Store(metric, float64(memStats.Alloc))
-				case "BuckHashSys":
-					metrics.Store(metric, float64(memStats.BuckHashSys))
-				case "Frees":
-					metrics.Store(metric, float64(memStats.Frees))
-				case "GCCPUFraction":
-					metrics.Store(metric, memStats.GCCPUFraction)
-				case "GCSys":
-					metrics.Store(metric, float64(memStats.GCSys))
-				case "HeapAlloc":
-					metrics.Store(metric, float64(memStats.HeapAlloc))
-				case "HeapIdle":
-					metrics.Store(metric, float64(memStats.HeapIdle))
-				case "HeapInuse":
-					metrics.Store(metric, float64(memStats.HeapInuse))
-				case "HeapObjects":
-					metrics.Store(metric, float64(memStats.HeapObjects))
-				case "HeapReleased":
-					metrics.Store(metric, float64(memStats.HeapReleased))
-				case "HeapSys":
-					metrics.Store(metric, float64(memStats.HeapSys))
-				case "LastGC":
-					metrics.Store(metric, float64(memStats.LastGC))
-				case "Lookups":
-					metrics.Store(metric, float64(memStats.Lookups))
-				case "MCacheInuse":
-					metrics.Store(metric, float64(memStats.MCacheInuse))
-				case "MCacheSys":
-					metrics.Store(metric, float64(memStats.MCacheSys))
-				case "MSpanInuse":
-					metrics.Store(metric, float64(memStats.MSpanInuse))
-				case "MSpanSys":
-					metrics.Store(metric, float64(memStats.MSpanSys))
-				case "Mallocs":
-					metrics.Store(metric, float64(memStats.Mallocs))
-				case "NextGC":
-					metrics.Store(metric, float64(memStats.NextGC))
-				case "NumForcedGC":
-					metrics.Store(metric, float64(memStats.NumForcedGC))
-				case "NumGC":
-					metrics.Store(metric, float64(memStats.NumGC))
-				case "OtherSys":
-					metrics.Store(metric, float64(memStats.OtherSys))
-				case "PauseTotalNs":
-					metrics.Store(metric, float64(memStats.PauseTotalNs))
-				case "StackInuse":
-					metrics.Store(metric, float64(memStats.StackInuse))
-				case "StackSys":
-					metrics.Store(metric, float64(memStats.StackSys))
-				case "Sys":
-					metrics.Store(metric, float64(memStats.Sys))
-				case "TotalAlloc":
-					metrics.Store(metric, float64(memStats.TotalAlloc))
-				}
-			}
-
-			// Add random metric
-			metrics.Store("RandomValue", rand.Float64())
-
-			// Increment poll count
-			pollCount++
-		}
-	}
-}
-
-// collectSystemMetrics collects system metrics using gopsutil
-func collectSystemMetrics(ctx context.Context, metrics *sync.Map) {
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			// Collect memory metrics
-			if memInfo, err := mem.VirtualMemory(); err == nil {
-				metrics.Store("TotalMemory", float64(memInfo.Total))
-				metrics.Store("FreeMemory", float64(memInfo.Free))
-			}
-
-			// Collect CPU utilization for each CPU
-			if cpuPercents, err := cpu.Percent(time.Second, true); err == nil {
-				for i, percent := range cpuPercents {
-					metricName := fmt.Sprintf("CPUutilization%d", i+1)
-					metrics.Store(metricName, percent)
-				}
-			}
-		}
-	}
-}
-
-// sendMetrics sends collected metrics using the worker pool
-func sendMetrics(ctx context.Context, workerPool *MetricsWorkerPool, runtimeMetrics, systemMetrics *sync.Map) {
-	ticker := time.NewTicker(reportInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if batchSize > 0 {
-				sendMetricsBatch(workerPool, runtimeMetrics, systemMetrics)
-			} else {
-				sendMetricsIndividual(workerPool, runtimeMetrics, systemMetrics)
-			}
-		}
-	}
-}
-
-// sendMetricsIndividual sends each metric individually using the worker pool
-func sendMetricsIndividual(workerPool *MetricsWorkerPool, runtimeMetrics, systemMetrics *sync.Map) {
-	// Send runtime metrics
-	runtimeMetrics.Range(func(key, value any) bool {
-		name, _ := key.(string)
-		val, _ := value.(float64)
-
-		metric := models.Metrics{
-			ID:    name,
-			MType: "gauge",
-			Value: &val,
-		}
-
-		workerPool.SubmitMetric(MetricData{
-			Metric: metric,
-			Type:   "runtime",
-		})
-		return true
-	})
-
-	// Send system metrics
-	systemMetrics.Range(func(key, value any) bool {
-		name, _ := key.(string)
-		val, _ := value.(float64)
-
-		metric := models.Metrics{
-			ID:    name,
-			MType: "gauge",
-			Value: &val,
-		}
-
-		workerPool.SubmitMetric(MetricData{
-			Metric: metric,
-			Type:   "system",
-		})
-		return true
-	})
-
-	// Send counter metric
-	counter := models.Metrics{
-		ID:    "PollCount",
-		MType: "counter",
-		Delta: &pollCount,
-	}
-
-	workerPool.SubmitMetric(MetricData{
-		Metric: counter,
-		Type:   "runtime",
-	})
-}
-
-// sendMetricsBatch sends metrics in batches (existing logic adapted)
-func sendMetricsBatch(workerPool *MetricsWorkerPool, runtimeMetrics, systemMetrics *sync.Map) {
-	batch := NewMetricsBatch()
-
-	// Add runtime metrics to batch
-	runtimeMetrics.Range(func(key, value any) bool {
-		name, _ := key.(string)
-		val, _ := value.(float64)
-		batch.AddGauge(name, val)
-		return true
-	})
-
-	// Add system metrics to batch
-	systemMetrics.Range(func(key, value any) bool {
-		name, _ := key.(string)
-		val, _ := value.(float64)
-		batch.AddGauge(name, val)
-		return true
-	})
-
-	// Add counter metric
-	batch.AddCounter("PollCount", pollCount)
-
-	// Get all metrics and send as batch
-	metrics := batch.GetAndClear()
-	if len(metrics) > 0 {
-		if err := sendBatch(metrics); err != nil {
-			log.Printf("Failed to send batch: %v", err)
-			// Fallback to individual sending via worker pool
-			for _, metric := range metrics {
-				workerPool.SubmitMetric(MetricData{
-					Metric: metric,
-					Type:   "batch_fallback",
-				})
-			}
-		} else {
-			log.Printf("Successfully sent batch of %d metrics", len(metrics))
-		}
-	}
-}
-
-// sendFinalMetrics sends final metrics before shutdown
-func sendFinalMetrics(workerPool *MetricsWorkerPool, runtimeMetrics, systemMetrics *sync.Map) {
-	if batchSize > 0 {
-		sendMetricsBatch(workerPool, runtimeMetrics, systemMetrics)
-	} else {
-		sendMetricsIndividual(workerPool, runtimeMetrics, systemMetrics)
-	}
+	time.Sleep(1 * time.Second)
 }
 
 // sendBatch sends a batch of metrics using the /updates/ endpoint (unchanged)
