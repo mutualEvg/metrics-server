@@ -92,6 +92,7 @@ func TestCollectSystemMetrics_With_Channels(t *testing.T) {
 
 	timeout := time.After(1 * time.Second)
 
+collectionLoop:
 	for receivedCount < 10 { // Expect several system metrics
 		select {
 		case metric := <-metricCollector.systemChan:
@@ -106,7 +107,7 @@ func TestCollectSystemMetrics_With_Channels(t *testing.T) {
 				foundCPU = true
 			}
 		case <-timeout:
-			break
+			break collectionLoop
 		}
 	}
 
