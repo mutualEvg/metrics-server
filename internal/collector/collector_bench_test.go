@@ -66,8 +66,7 @@ func BenchmarkMetricChannelOperations(b *testing.B) {
 func BenchmarkCollectorCreation(b *testing.B) {
 	retryConfig := retry.RetryConfig{
 		MaxAttempts: 3,
-		BaseDelay:   100 * time.Millisecond,
-		MaxDelay:    5 * time.Second,
+		Intervals:   []time.Duration{100 * time.Millisecond, 1 * time.Second},
 	}
 
 	var pollCount int64

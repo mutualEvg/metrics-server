@@ -223,9 +223,8 @@ func runWorkerWorkload(ctx context.Context) {
 	defer log.Println("Worker workload completed")
 
 	retryConfig := retry.RetryConfig{
-		MaxAttempts: 1, // Minimal retries to reduce latency
-		BaseDelay:   1 * time.Millisecond,
-		MaxDelay:    10 * time.Millisecond,
+		MaxAttempts: 1,                 // Minimal retries to reduce latency
+		Intervals:   []time.Duration{}, // No retry intervals for minimal latency
 	}
 
 	pool := worker.NewPool(5, *serverAddr, "test-key", retryConfig)

@@ -130,7 +130,7 @@ func BenchmarkContentTypeMiddleware(b *testing.B) {
 		w.Write([]byte("OK"))
 	})
 
-	contentTypeHandler := middleware.ContentTypeMiddleware(handler)
+	contentTypeHandler := middleware.RequireContentType("application/json")(handler)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -150,7 +150,7 @@ func BenchmarkHashMiddleware(b *testing.B) {
 		w.Write([]byte("OK"))
 	})
 
-	hashHandler := middleware.HashMiddleware(testKey)(handler)
+	hashHandler := middleware.HashVerification(testKey)(handler)
 
 	// Create test data with hash
 	testData := `{"id": "test", "type": "gauge", "value": 123.45}`
@@ -176,7 +176,7 @@ func BenchmarkResponseHashMiddleware(b *testing.B) {
 		w.Write([]byte(`{"id": "test", "type": "gauge", "value": 123.45}`))
 	})
 
-	responseHashHandler := middleware.ResponseHashMiddleware(testKey)(handler)
+	responseHashHandler := middleware.ResponseHash(testKey)(handler)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -199,8 +199,8 @@ func BenchmarkMiddlewareChain(b *testing.B) {
 
 	// Apply multiple middleware layers
 	chainedHandler := middleware.GzipMiddleware(
-		middleware.ContentTypeMiddleware(
-			middleware.ResponseHashMiddleware(testKey)(handler),
+		middleware.RequireContentType("application/json")(
+			middleware.ResponseHash(testKey)(handler),
 		),
 	)
 

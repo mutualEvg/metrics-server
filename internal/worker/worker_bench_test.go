@@ -18,8 +18,7 @@ import (
 func BenchmarkWorkerPoolCreation(b *testing.B) {
 	retryConfig := retry.RetryConfig{
 		MaxAttempts: 3,
-		BaseDelay:   100 * time.Millisecond,
-		MaxDelay:    5 * time.Second,
+		Intervals:   []time.Duration{100 * time.Millisecond, 1 * time.Second},
 	}
 
 	b.ResetTimer()
@@ -32,9 +31,8 @@ func BenchmarkWorkerPoolCreation(b *testing.B) {
 // BenchmarkMetricSubmission benchmarks metric submission to worker pool
 func BenchmarkMetricSubmission(b *testing.B) {
 	retryConfig := retry.RetryConfig{
-		MaxAttempts: 1, // Minimal retries for benchmark
-		BaseDelay:   10 * time.Millisecond,
-		MaxDelay:    100 * time.Millisecond,
+		MaxAttempts: 1,                 // Minimal retries for benchmark
+		Intervals:   []time.Duration{}, // No retry intervals for minimal latency
 	}
 
 	pool := worker.NewPool(5, "http://localhost:8080", "test-key", retryConfig)
@@ -197,8 +195,7 @@ func BenchmarkConcurrentWorkers(b *testing.B) {
 
 	retryConfig := retry.RetryConfig{
 		MaxAttempts: 1,
-		BaseDelay:   1 * time.Millisecond,
-		MaxDelay:    10 * time.Millisecond,
+		Intervals:   []time.Duration{}, // No retry intervals for minimal latency
 	}
 
 	pool := worker.NewPool(10, server.URL, "", retryConfig)
