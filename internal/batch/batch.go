@@ -24,7 +24,7 @@ type Batch struct {
 // New creates a new batch
 func New() *Batch {
 	return &Batch{
-		metrics: make([]models.Metrics, 0),
+		metrics: make([]models.Metrics, 0, 50), // Pre-allocate capacity to avoid slice growth
 	}
 }
 
@@ -59,9 +59,10 @@ func (b *Batch) GetAndClear() []models.Metrics {
 		return nil
 	}
 
-	result := make([]models.Metrics, len(b.metrics))
-	copy(result, b.metrics)
-	b.metrics = b.metrics[:0] // Clear the slice
+	// Return the existing slice and create a new one instead of copying
+	// This avoids the large memory allocation from copying
+	result := b.metrics
+	b.metrics = make([]models.Metrics, 0, cap(b.metrics)) // Reuse capacity
 	return result
 }
 

@@ -21,8 +21,8 @@ type MemStorage struct {
 
 func NewMemStorage() *MemStorage {
 	return &MemStorage{
-		gauges:   make(map[string]float64),
-		counters: make(map[string]int64),
+		gauges:   make(map[string]float64, 50), // Pre-allocate capacity for better performance
+		counters: make(map[string]int64, 50),   // Pre-allocate capacity for better performance
 	}
 }
 
@@ -73,8 +73,11 @@ func (ms *MemStorage) GetCounter(name string) (int64, bool) {
 func (ms *MemStorage) GetAll() (map[string]float64, map[string]int64) {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
-	gCopy := make(map[string]float64)
-	cCopy := make(map[string]int64)
+
+	// Pre-allocate maps with known capacity to avoid map growth
+	gCopy := make(map[string]float64, len(ms.gauges))
+	cCopy := make(map[string]int64, len(ms.counters))
+
 	for k, v := range ms.gauges {
 		gCopy[k] = v
 	}
@@ -87,8 +90,10 @@ func (ms *MemStorage) GetAll() (map[string]float64, map[string]int64) {
 // getAllInternal returns copies of all metrics without acquiring locks
 // This method assumes the caller already holds the appropriate locks
 func (ms *MemStorage) getAllInternal() (map[string]float64, map[string]int64) {
-	gCopy := make(map[string]float64)
-	cCopy := make(map[string]int64)
+	// Pre-allocate maps with known capacity to avoid map growth
+	gCopy := make(map[string]float64, len(ms.gauges))
+	cCopy := make(map[string]int64, len(ms.counters))
+
 	for k, v := range ms.gauges {
 		gCopy[k] = v
 	}
