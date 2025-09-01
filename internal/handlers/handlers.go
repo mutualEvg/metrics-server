@@ -14,7 +14,10 @@ import (
 )
 
 const (
-	GaugeType   = "gauge"
+	// GaugeType represents floating-point metrics that can be set to any value
+	GaugeType = "gauge"
+
+	// CounterType represents integer metrics that accumulate values over time
 	CounterType = "counter"
 )
 
@@ -38,7 +41,9 @@ func PingHandler(dbStorage *storage.DBStorage) http.HandlerFunc {
 	}
 }
 
-// UpdateHandler handles legacy URL-based metric updates
+// UpdateHandler handles legacy URL-based metric updates via POST requests.
+// URL format: /update/{type}/{name}/{value}
+// Supports both "gauge" and "counter" metric types.
 func UpdateHandler(s storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		typ := chi.URLParam(r, "type")
@@ -70,7 +75,9 @@ func UpdateHandler(s storage.Storage) http.HandlerFunc {
 	}
 }
 
-// ValueHandler handles legacy URL-based metric retrieval
+// ValueHandler handles legacy URL-based metric retrieval via GET requests.
+// URL format: /value/{type}/{name}
+// Returns the metric value as plain text or 404 if not found.
 func ValueHandler(s storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		typ := chi.URLParam(r, "type")
@@ -93,7 +100,8 @@ func ValueHandler(s storage.Storage) http.HandlerFunc {
 	}
 }
 
-// RootHandler handles the root endpoint showing all metrics
+// RootHandler handles the root endpoint showing all metrics in HTML format.
+// Returns an HTML page listing all gauge and counter metrics.
 func RootHandler(s storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		g, c := s.GetAll()
@@ -109,7 +117,8 @@ func RootHandler(s storage.Storage) http.HandlerFunc {
 	}
 }
 
-// UpdateJSONHandler handles POST /update/ with JSON body
+// UpdateJSONHandler handles JSON-based metric updates via POST /update/.
+// Accepts a single metric in JSON format and returns the updated metric.
 func UpdateJSONHandler(s storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -173,7 +182,8 @@ func UpdateJSONHandler(s storage.Storage) http.HandlerFunc {
 	}
 }
 
-// ValueJSONHandler handles POST /value/ with JSON body
+// ValueJSONHandler handles JSON-based metric retrieval via POST /value/.
+// Accepts a metric ID and type in JSON format and returns the current value.
 func ValueJSONHandler(s storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -230,7 +240,9 @@ func ValueJSONHandler(s storage.Storage) http.HandlerFunc {
 	}
 }
 
-// UpdateBatchHandler handles POST /updates/ with JSON array of metrics
+// UpdateBatchHandler handles batch metric updates via POST /updates/.
+// Accepts an array of metrics in JSON format and processes them atomically.
+// Uses database transactions for DBStorage, sequential processing for others.
 func UpdateBatchHandler(s storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
