@@ -100,6 +100,14 @@ func main() {
 
 	// Add middleware
 	r.Use(loggingMiddleware)
+
+	// Add hash middleware BEFORE gzip middleware so it can verify compressed data
+	if cfg.Key != "" {
+		log.Info().Msg("SHA256 hash verification enabled")
+		r.Use(gzipmw.HashVerification(cfg.Key))
+		r.Use(gzipmw.ResponseHash(cfg.Key))
+	}
+
 	r.Use(gzipmw.GzipMiddleware)
 
 	// Database ping handler
