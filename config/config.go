@@ -19,6 +19,8 @@ type Config struct {
 	DatabaseDSN     string
 	UseFileStorage  bool   // Indicates if file storage was explicitly configured
 	Key             string // Key for SHA256 signature verification
+	AuditFile       string // Path to audit log file (optional)
+	AuditURL        string // URL for remote audit server (optional)
 }
 
 const (
@@ -40,6 +42,8 @@ func Load() *Config {
 	flagRestore := flag.Bool("r", false, "Restore previously stored values")
 	flagDatabaseDSN := flag.String("d", "", "Database connection string")
 	flagKey := flag.String("k", "", "Key for SHA256 signature")
+	flagAuditFile := flag.String("audit-file", "", "Path to audit log file")
+	flagAuditURL := flag.String("audit-url", "", "URL for remote audit server")
 	flag.Parse()
 
 	addr := resolveString("ADDRESS", *flagAddress, defaultServerAddress)
@@ -49,6 +53,8 @@ func Load() *Config {
 	databaseDSN := resolveString("DATABASE_DSN", *flagDatabaseDSN, defaultDatabaseDSN)
 	restore := resolveBool("RESTORE", *flagRestore, defaultRestore)
 	key := resolveString("KEY", *flagKey, "")
+	auditFile := resolveString("AUDIT_FILE", *flagAuditFile, "")
+	auditURL := resolveString("AUDIT_URL", *flagAuditURL, "")
 
 	// Determine if file storage is explicitly configured
 	var fileStoragePath string
@@ -76,6 +82,8 @@ func Load() *Config {
 		DatabaseDSN:     databaseDSN,
 		UseFileStorage:  useFileStorage,
 		Key:             key,
+		AuditFile:       auditFile,
+		AuditURL:        auditURL,
 	}
 }
 

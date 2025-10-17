@@ -6,8 +6,11 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/mutualEvg/metrics-server/internal/audit"
 	"github.com/mutualEvg/metrics-server/internal/models"
 	"github.com/mutualEvg/metrics-server/storage"
 	"github.com/rs/zerolog/log"
@@ -16,10 +19,35 @@ import (
 const (
 	// GaugeType represents floating-point metrics that can be set to any value
 	GaugeType = "gauge"
-
+	
 	// CounterType represents integer metrics that accumulate values over time
 	CounterType = "counter"
 )
+
+// extractIPAddress extracts the client IP address from the request.
+// It checks X-Real-IP and X-Forwarded-For headers first, then falls back to RemoteAddr.
+func extractIPAddress(r *http.Request) string {
+	// Check X-Real-IP header
+	if ip := r.Header.Get("X-Real-IP"); ip != "" {
+		return ip
+	}
+
+	// Check X-Forwarded-For header (takes the first IP if multiple)
+	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+		// X-Forwarded-For can contain multiple IPs, take the first one
+		if idx := strings.Index(forwarded, ","); idx > 0 {
+			return strings.TrimSpace(forwarded[:idx])
+		}
+		return forwarded
+	}
+
+	// Fall back to RemoteAddr (includes port, so we need to strip it)
+	if idx := strings.LastIndex(r.RemoteAddr, ":"); idx > 0 {
+		return r.RemoteAddr[:idx]
+	}
+
+	return r.RemoteAddr
+}
 
 // PingHandler handles the /ping endpoint to check database connectivity
 func PingHandler(dbStorage *storage.DBStorage) http.HandlerFunc {
@@ -119,7 +147,7 @@ func RootHandler(s storage.Storage) http.HandlerFunc {
 
 // UpdateJSONHandler handles JSON-based metric updates via POST /update/.
 // Accepts a single metric in JSON format and returns the updated metric.
-func UpdateJSONHandler(s storage.Storage) http.HandlerFunc {
+func UpdateJSONHandler(s storage.Storage, auditSubject *audit.Subject) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -155,6 +183,15 @@ func UpdateJSONHandler(s storage.Storage) http.HandlerFunc {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(response)
 
+			// Trigger audit event after successful update
+			if auditSubject != nil && auditSubject.HasObservers() {
+				auditSubject.Notify(audit.Event{
+					Timestamp: time.Now().Unix(),
+					Metrics:   []string{metric.ID},
+					IPAddress: extractIPAddress(r),
+				})
+			}
+
 		case CounterType:
 			if metric.Delta == nil {
 				http.Error(w, "Delta is required for counter metrics", http.StatusBadRequest)
@@ -170,6 +207,15 @@ func UpdateJSONHandler(s storage.Storage) http.HandlerFunc {
 				}
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(response)
+
+				// Trigger audit event after successful update
+				if auditSubject != nil && auditSubject.HasObservers() {
+					auditSubject.Notify(audit.Event{
+						Timestamp: time.Now().Unix(),
+						Metrics:   []string{metric.ID},
+						IPAddress: extractIPAddress(r),
+					})
+				}
 			} else {
 				http.Error(w, "Failed to retrieve updated counter value", http.StatusInternalServerError)
 				return
@@ -184,7 +230,7 @@ func UpdateJSONHandler(s storage.Storage) http.HandlerFunc {
 
 // ValueJSONHandler handles JSON-based metric retrieval via POST /value/.
 // Accepts a metric ID and type in JSON format and returns the current value.
-func ValueJSONHandler(s storage.Storage) http.HandlerFunc {
+func ValueJSONHandler(s storage.Storage, auditSubject *audit.Subject) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -214,6 +260,15 @@ func ValueJSONHandler(s storage.Storage) http.HandlerFunc {
 				}
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(response)
+
+				// Trigger audit event after successful retrieval
+				if auditSubject != nil && auditSubject.HasObservers() {
+					auditSubject.Notify(audit.Event{
+						Timestamp: time.Now().Unix(),
+						Metrics:   []string{metric.ID},
+						IPAddress: extractIPAddress(r),
+					})
+				}
 			} else {
 				http.Error(w, "Metric not found", http.StatusNotFound)
 				return
@@ -228,6 +283,15 @@ func ValueJSONHandler(s storage.Storage) http.HandlerFunc {
 				}
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(response)
+
+				// Trigger audit event after successful retrieval
+				if auditSubject != nil && auditSubject.HasObservers() {
+					auditSubject.Notify(audit.Event{
+						Timestamp: time.Now().Unix(),
+						Metrics:   []string{metric.ID},
+						IPAddress: extractIPAddress(r),
+					})
+				}
 			} else {
 				http.Error(w, "Metric not found", http.StatusNotFound)
 				return
@@ -243,7 +307,7 @@ func ValueJSONHandler(s storage.Storage) http.HandlerFunc {
 // UpdateBatchHandler handles batch metric updates via POST /updates/.
 // Accepts an array of metrics in JSON format and processes them atomically.
 // Uses database transactions for DBStorage, sequential processing for others.
-func UpdateBatchHandler(s storage.Storage) http.HandlerFunc {
+func UpdateBatchHandler(s storage.Storage, auditSubject *audit.Subject) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -330,5 +394,20 @@ func UpdateBatchHandler(s storage.Storage) http.HandlerFunc {
 		}
 
 		json.NewEncoder(w).Encode(response)
+
+		// Trigger audit event after successful batch update
+		if auditSubject != nil && auditSubject.HasObservers() {
+			// Collect all metric names from the batch
+			metricNames := make([]string, 0, len(metrics))
+			for _, metric := range metrics {
+				metricNames = append(metricNames, metric.ID)
+			}
+
+			auditSubject.Notify(audit.Event{
+				Timestamp: time.Now().Unix(),
+				Metrics:   metricNames,
+				IPAddress: extractIPAddress(r),
+			})
+		}
 	}
 }

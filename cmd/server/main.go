@@ -3,22 +3,22 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/mutualEvg/metrics-server/config"
+	"github.com/mutualEvg/metrics-server/internal/audit"
 	"github.com/mutualEvg/metrics-server/internal/handlers"
 	gzipmw "github.com/mutualEvg/metrics-server/internal/middleware"
 	"github.com/mutualEvg/metrics-server/storage"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-
-	"net/http"
-	"strings"
 )
 
 func main() {
@@ -96,6 +96,35 @@ func main() {
 		log.Info().Msg("Using in-memory storage (no persistence)")
 	}
 
+	// Initialize audit system
+	auditSubject := audit.NewSubject()
+
+	// Configure file auditor if specified
+	if cfg.AuditFile != "" {
+		fileAuditor, err := audit.NewFileAuditor(cfg.AuditFile)
+		if err != nil {
+			log.Error().Err(err).Str("file", cfg.AuditFile).Msg("Failed to initialize file auditor")
+		} else {
+			auditSubject.Attach(fileAuditor)
+			log.Info().Str("file", cfg.AuditFile).Msg("File audit logging enabled")
+		}
+	}
+
+	// Configure remote auditor if specified
+	if cfg.AuditURL != "" {
+		remoteAuditor, err := audit.NewRemoteAuditor(cfg.AuditURL)
+		if err != nil {
+			log.Error().Err(err).Str("url", cfg.AuditURL).Msg("Failed to initialize remote auditor")
+		} else {
+			auditSubject.Attach(remoteAuditor)
+			log.Info().Str("url", cfg.AuditURL).Msg("Remote audit logging enabled")
+		}
+	}
+
+	if !auditSubject.HasObservers() {
+		log.Info().Msg("Audit logging is disabled (no audit-file or audit-url configured)")
+	}
+
 	r := chi.NewRouter()
 
 	// Add middleware
@@ -118,9 +147,9 @@ func main() {
 	r.Get("/value/{type}/{name}", handlers.ValueHandler(mainStorage))
 
 	// New JSON API with Content-Type middleware - use exact paths to avoid conflicts
-	r.With(gzipmw.RequireContentType("application/json")).Post("/update/", handlers.UpdateJSONHandler(mainStorage))
-	r.With(gzipmw.RequireContentType("application/json")).Post("/value/", handlers.ValueJSONHandler(mainStorage))
-	r.With(gzipmw.RequireContentType("application/json")).Post("/updates/", handlers.UpdateBatchHandler(mainStorage))
+	r.With(gzipmw.RequireContentType("application/json")).Post("/update/", handlers.UpdateJSONHandler(mainStorage, auditSubject))
+	r.With(gzipmw.RequireContentType("application/json")).Post("/value/", handlers.ValueJSONHandler(mainStorage, auditSubject))
+	r.With(gzipmw.RequireContentType("application/json")).Post("/updates/", handlers.UpdateBatchHandler(mainStorage, auditSubject))
 
 	r.Get("/", handlers.RootHandler(mainStorage))
 

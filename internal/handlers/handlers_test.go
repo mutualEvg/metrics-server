@@ -171,7 +171,7 @@ func TestRootHandler(t *testing.T) {
 
 func TestUpdateJSONHandler(t *testing.T) {
 	store := storage.NewMemStorage()
-	handler := UpdateJSONHandler(store)
+	handler := UpdateJSONHandler(store, nil)
 
 	tests := []struct {
 		name           string
@@ -271,8 +271,8 @@ func TestValueJSONHandler(t *testing.T) {
 	store := storage.NewMemStorage()
 	store.UpdateGauge("cpu_usage", 75.5)
 	store.UpdateCounter("requests", 100)
-
-	handler := ValueJSONHandler(store)
+	
+	handler := ValueJSONHandler(store, nil)
 
 	tests := []struct {
 		name           string
@@ -357,7 +357,7 @@ func TestValueJSONHandler(t *testing.T) {
 
 func TestUpdateBatchHandler(t *testing.T) {
 	store := storage.NewMemStorage()
-	handler := UpdateBatchHandler(store)
+	handler := UpdateBatchHandler(store, nil)
 
 	tests := []struct {
 		name           string

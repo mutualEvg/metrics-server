@@ -58,7 +58,7 @@ func BenchmarkValueHandler(b *testing.B) {
 // BenchmarkUpdateJSONHandler benchmarks the JSON-based update handler
 func BenchmarkUpdateJSONHandler(b *testing.B) {
 	s := storage.NewMemStorage()
-	handler := handlers.UpdateJSONHandler(s)
+	handler := handlers.UpdateJSONHandler(s, nil)
 
 	value := 123.45
 	metric := models.Metrics{
@@ -83,7 +83,7 @@ func BenchmarkUpdateJSONHandler(b *testing.B) {
 func BenchmarkValueJSONHandler(b *testing.B) {
 	s := storage.NewMemStorage()
 	s.UpdateGauge("test_gauge", 123.45)
-	handler := handlers.ValueJSONHandler(s)
+	handler := handlers.ValueJSONHandler(s, nil)
 
 	metric := models.Metrics{
 		ID:    "test_gauge",
@@ -105,7 +105,7 @@ func BenchmarkValueJSONHandler(b *testing.B) {
 // BenchmarkUpdateBatchHandler benchmarks the batch update handler
 func BenchmarkUpdateBatchHandler(b *testing.B) {
 	s := storage.NewMemStorage()
-	handler := handlers.UpdateBatchHandler(s)
+	handler := handlers.UpdateBatchHandler(s, nil)
 
 	// Create batch of 10 metrics
 	metrics := make([]models.Metrics, 10)
@@ -167,7 +167,7 @@ func BenchmarkHandlerWithManyMetrics(b *testing.B) {
 		s.UpdateCounter(fmt.Sprintf("counter_%d", i), int64(i))
 	}
 
-	handler := handlers.ValueJSONHandler(s)
+	handler := handlers.ValueJSONHandler(s, nil)
 
 	metric := models.Metrics{
 		ID:    "gauge_500", // Metric that exists
