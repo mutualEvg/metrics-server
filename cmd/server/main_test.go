@@ -85,7 +85,7 @@ func TestUpdateHandler(t *testing.T) {
 func TestUpdateJSONHandler(t *testing.T) {
 	storage := storage.NewMemStorage()
 	router := chi.NewRouter()
-	router.Post("/update/", handlers.UpdateJSONHandler(storage))
+	router.Post("/update/", handlers.UpdateJSONHandler(storage, nil))
 
 	tests := []struct {
 		name       string
@@ -163,7 +163,7 @@ func TestValueJSONHandler(t *testing.T) {
 	storage.UpdateCounter("testCounter", 42)
 
 	router := chi.NewRouter()
-	router.Post("/value/", handlers.ValueJSONHandler(storage))
+	router.Post("/value/", handlers.ValueJSONHandler(storage, nil))
 
 	tests := []struct {
 		name       string
@@ -219,7 +219,7 @@ func TestGzipCompression(t *testing.T) {
 	storage := storage.NewMemStorage()
 	router := chi.NewRouter()
 	router.Use(gzipmw.GzipMiddleware)
-	router.Post("/update/", handlers.UpdateJSONHandler(storage))
+	router.Post("/update/", handlers.UpdateJSONHandler(storage, nil))
 
 	metric := models.Metrics{
 		ID:    "testGauge",
@@ -266,7 +266,7 @@ func TestGzipDecompression(t *testing.T) {
 	storage := storage.NewMemStorage()
 	router := chi.NewRouter()
 	router.Use(gzipmw.GzipMiddleware)
-	router.Post("/update/", handlers.UpdateJSONHandler(storage))
+	router.Post("/update/", handlers.UpdateJSONHandler(storage, nil))
 
 	metric := models.Metrics{
 		ID:    "testGauge",

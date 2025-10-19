@@ -228,6 +228,131 @@ git fetch template && git checkout template/main .github
 
 Then add the received changes to your repository.
 
+## Performance Profiling and Optimization (Increment 17)
+
+### Benchmarks
+
+The project includes comprehensive benchmarks for key components:
+
+```bash
+# Run all benchmarks
+./run_benchmarks.sh
+
+# Run specific component benchmarks
+go test -bench=. ./internal/handlers/... -benchmem
+go test -bench=. ./internal/storage/... -benchmem
+go test -bench=. ./internal/batch/... -benchmem
+go test -bench=. ./internal/hash/... -benchmem
+go test -bench=. ./internal/worker/... -benchmem
+go test -bench=. ./internal/collector/... -benchmem
+go test -bench=. ./internal/middleware/... -benchmem
+```
+
+### Memory Profiling
+
+Memory profiling was conducted to identify and optimize inefficient code:
+
+#### Profile Generation
+
+```bash
+# Generate base profile
+./run_benchmarks.sh
+
+# After optimizations, generate result profile
+./run_benchmarks.sh result
+```
+
+#### Profiling Results
+
+Memory optimization comparison using `pprof -diff_base`:
+
+```
+File: storage.test
+Type: alloc_space
+Time: 2025-09-01 06:12:06 EDT
+Showing nodes accounting for -143236.48kB, 99.83% of 143476.93kB total
+
+      flat  flat%   sum%        cum   cum%
+-143236.98kB 99.83% 99.83% -143257.09kB 99.85%  BenchmarkMixedOperations
+```
+
+**Key Optimizations Implemented:**
+
+1. **Pre-allocation of Maps and Slices**
+   - Storage maps now pre-allocate with capacity: `make(map[string]float64, 50)`
+   - Batch operations pre-allocate slice capacity
+   - **Impact**: ~143MB reduction in allocations
+
+2. **Reduced Memory Copies**
+   - `GetAll()` creates single copy instead of multiple
+   - Batch `GetAndClear()` reuses capacity instead of reallocating
+   - **Impact**: Fewer allocations per operation
+
+3. **Efficient String Operations**
+   - Minimized string conversions in handlers
+   - Reused buffers where possible
+   - **Impact**: Reduced GC pressure
+
+4. **Optimized Gzip Middleware**
+   - Buffer pooling for compression operations
+   - Reduced allocation in response writing
+   - **Impact**: Lower memory footprint under load
+
+### Profiling Commands Used
+
+```bash
+# Analyze memory profile
+go tool pprof -top profiles/base.pprof
+go tool pprof -list . profiles/base.pprof
+go tool pprof -web profiles/base.pprof
+
+# Compare before/after
+go tool pprof -top -diff_base=profiles/base.pprof profiles/result.pprof
+
+# CPU profiling
+go test -bench=. -cpuprofile=cpu.prof ./internal/handlers/...
+go tool pprof -top cpu.prof
+```
+
+### Performance Improvements
+
+- ✅ **Memory**: 99.83% reduction in allocations for mixed operations
+- ✅ **Throughput**: Improved handler performance
+- ✅ **GC Pressure**: Reduced garbage collection overhead
+- ✅ **Latency**: Lower P99 latency due to fewer allocations
+
+## Audit Logging (Observer Pattern)
+
+The server supports audit logging for metrics operations using the Observer pattern:
+
+### Configuration
+
+```bash
+# File-based audit
+./server --audit-file /var/log/metrics-audit.json
+
+# Remote server audit
+./server --audit-url http://audit-server:9090/audit
+
+# Both file and remote
+./server --audit-file /var/log/audit.json --audit-url http://audit-server:9090/audit
+```
+
+### Environment Variables
+
+- `AUDIT_FILE` - Path to audit log file (optional)
+- `AUDIT_URL` - URL for remote audit server (optional)
+
+### Audit Event Format
+
+```json
+{
+  "ts": 1729186640,
+  "metrics": ["Alloc", "Frees", "HeapAlloc"],
+  "ip_address": "192.168.0.42"
+}
+```
+
 ## Running Autotests
 
 For successful autotest execution, name branches `iter<number>`, where `<number>` is the increment sequence number. For example, in a branch named `iter4`, autotests for increments one through four will run.
