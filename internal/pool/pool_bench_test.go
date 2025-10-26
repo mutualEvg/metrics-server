@@ -2,6 +2,12 @@ package pool
 
 import "testing"
 
+// Global variables to prevent compiler optimizations in benchmarks
+var (
+	benchResult    int
+	benchResultStr string
+)
+
 func BenchmarkPool_GetPut(b *testing.B) {
 	p := New(func() *TestStruct {
 		return &TestStruct{
@@ -17,6 +23,9 @@ func BenchmarkPool_GetPut(b *testing.B) {
 		obj.Name = "benchmark"
 		obj.Tags = append(obj.Tags, "tag1", "tag2", "tag3")
 		obj.Data["key"] = i
+		// Use the values to prevent optimization
+		benchResult = obj.Counter
+		benchResultStr = obj.Name
 		p.Put(obj)
 	}
 }
@@ -72,6 +81,8 @@ func BenchmarkPool_ComplexStruct(b *testing.B) {
 		}
 	})
 
+	var result int64
+	var active bool
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		obj := p.Get()
@@ -81,8 +92,14 @@ func BenchmarkPool_ComplexStruct(b *testing.B) {
 		obj.Config["key"] = "value"
 		obj.Nested.Counter = i
 		obj.Nested.Name = "nested"
+		// Use the values to prevent optimization
+		result = obj.ID
+		active = obj.Active
 		p.Put(obj)
 	}
+	// Prevent compiler from optimizing away the variables
+	_ = result
+	_ = active
 }
 
 func BenchmarkPool_ComplexStruct_NoReuse(b *testing.B) {
