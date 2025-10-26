@@ -27,3 +27,4 @@ vendor/
 # Binaries
 agent
 server
+bin/
