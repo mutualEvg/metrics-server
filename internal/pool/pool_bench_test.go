@@ -42,6 +42,9 @@ func BenchmarkPool_NoReuse(b *testing.B) {
 		obj.Name = "benchmark"
 		obj.Tags = append(obj.Tags, "tag1", "tag2", "tag3")
 		obj.Data["key"] = i
+		// Use the values to prevent optimization
+		benchResult = obj.Counter
+		benchResultStr = obj.Name
 		// No reuse - object will be garbage collected
 	}
 }
@@ -104,6 +107,8 @@ func BenchmarkPool_ComplexStruct(b *testing.B) {
 
 func BenchmarkPool_ComplexStruct_NoReuse(b *testing.B) {
 	// Benchmark without pool for complex struct
+	var result int64
+	var active bool
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		obj := &ComplexTestStruct{
@@ -120,8 +125,14 @@ func BenchmarkPool_ComplexStruct_NoReuse(b *testing.B) {
 		obj.Config["key"] = "value"
 		obj.Nested.Counter = i
 		obj.Nested.Name = "nested"
+		// Use the values to prevent optimization
+		result = obj.ID
+		active = obj.Active
 		// No reuse
 	}
+	// Prevent compiler from optimizing away the variables
+	_ = result
+	_ = active
 }
 
 func BenchmarkPool_LargeSlices(b *testing.B) {
