@@ -21,7 +21,21 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+var (
+	buildVersion string = "N/A"
+	buildDate    string = "N/A"
+	buildCommit  string = "N/A"
+)
+
+func printBuildInfo() {
+	fmt.Printf("Build version: %s\n", buildVersion)
+	fmt.Printf("Build date: %s\n", buildDate)
+	fmt.Printf("Build commit: %s\n", buildCommit)
+}
+
 func main() {
+	printBuildInfo()
+	
 	cfg := config.Load()
 
 	// Setup zerolog

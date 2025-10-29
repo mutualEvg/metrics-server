@@ -19,3 +19,23 @@ type Metrics struct {
 	// This field is omitted from JSON if nil
 	Value *float64 `json:"value,omitempty"`
 }
+
+// generate:reset
+type TestResetStruct struct {
+	Counter int
+	Name    string
+	Active  bool
+	Tags    []string
+	Data    map[string]int
+	Value   *float64
+}
+
+// generate:reset
+type ComplexResetStruct struct {
+	ID       int64
+	Label    string
+	Items    []int
+	Config   map[string]string
+	Child    *TestResetStruct
+	ChildPtr *ComplexResetStruct
+}

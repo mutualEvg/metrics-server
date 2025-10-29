@@ -14,10 +14,22 @@ import (
 )
 
 var (
+	buildVersion string = "N/A"
+	buildDate    string = "N/A"
+	buildCommit  string = "N/A"
+	
 	pollCount int64
 )
 
+func printBuildInfo() {
+	fmt.Printf("Build version: %s\n", buildVersion)
+	fmt.Printf("Build date: %s\n", buildDate)
+	fmt.Printf("Build commit: %s\n", buildCommit)
+}
+
 func main() {
+	printBuildInfo()
+	
 	// Parse configuration
 	config := agent.ParseConfig()
 
