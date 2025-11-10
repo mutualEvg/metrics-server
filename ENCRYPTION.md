@@ -21,7 +21,7 @@ The metrics service supports RSA asymmetric encryption to protect metrics data i
 First, generate an RSA key pair using the provided utility:
 
 ```bash
-go run cmd/reset/generate_keys.go -bits 2048 -priv private.pem -pub public.pem
+go run cmd/keygen/main.go -bits 2048 -priv private.pem -pub public.pem
 ```
 
 Parameters:

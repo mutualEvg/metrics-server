@@ -13,7 +13,7 @@ This guide shows you how to quickly set up encrypted metrics transmission in 5 m
 
 ```bash
 # Build the key generator
-go build -o bin/keygen ./cmd/reset/generate_keys.go
+go build -o bin/keygen ./cmd/keygen
 
 # Generate a 2048-bit RSA key pair
 ./bin/keygen -priv server_private.pem -pub agent_public.pem
@@ -169,7 +169,7 @@ export BATCH_SIZE=10
 ### 1. Test Key Generation
 
 ```bash
-./bin/keygen -priv test_priv.pem -pub test_pub.pem
+go run cmd/keygen/main.go -priv test_priv.pem -pub test_pub.pem
 ls -l test_*.pem
 ```
 
