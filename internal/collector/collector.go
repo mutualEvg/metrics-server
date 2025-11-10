@@ -37,6 +37,7 @@ type Collector struct {
 	batchSize      int
 	serverAddr     string
 	key            string
+	cryptoKey      string // Path to public key for encryption
 	retryConfig    retry.RetryConfig
 	pollCount      *int64
 }
@@ -52,9 +53,15 @@ func New(workerPool *worker.Pool, pollInterval, reportInterval time.Duration, ba
 		batchSize:      batchSize,
 		serverAddr:     serverAddr,
 		key:            key,
+		cryptoKey:      "",
 		retryConfig:    retryConfig,
 		pollCount:      pollCount,
 	}
+}
+
+// SetCryptoKey sets the path to the public key for encryption
+func (c *Collector) SetCryptoKey(cryptoKey string) {
+	c.cryptoKey = cryptoKey
 }
 
 // Start begins metric collection and forwarding
@@ -345,7 +352,7 @@ func (c *Collector) sendMetricsBatch(runtimeMetrics, systemMetrics []worker.Metr
 	// Get all metrics and send as batch
 	metrics := batchInstance.GetAndClear()
 	if len(metrics) > 0 {
-		if err := batch.Send(metrics, c.serverAddr, c.key, c.retryConfig); err != nil {
+		if err := batch.SendWithEncryption(metrics, c.serverAddr, c.key, c.cryptoKey, c.retryConfig); err != nil {
 			log.Printf("Failed to send batch: %v", err)
 			// Fallback to individual sending via worker pool
 			for _, metric := range metrics {
