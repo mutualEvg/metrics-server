@@ -88,6 +88,31 @@ Usage:
 
 See [JSON_CONFIG.md](JSON_CONFIG.md) for detailed documentation and examples.
 
+### Graceful Shutdown
+
+Both server and agent implement graceful shutdown to ensure data integrity:
+
+- **Signals Handled**: SIGTERM, SIGINT, SIGQUIT
+- **Server**: Completes all in-flight HTTP requests (30s timeout) and saves all unsaved data
+- **Agent**: Flushes all pending metrics and completes transmission before shutdown
+
+Usage:
+```bash
+# Graceful shutdown with Ctrl+C (SIGINT)
+./server
+^C
+
+# Or using kill command (SIGTERM)
+kill $(pgrep server)
+
+# Works with Docker, Kubernetes, systemd
+docker stop metrics-server
+kubectl delete pod metrics-server-xxx
+systemctl stop metrics-server
+```
+
+See [GRACEFUL_SHUTDOWN.md](GRACEFUL_SHUTDOWN.md) for detailed documentation.
+
 ### File Storage
 
 The server can persist metrics to disk and restore them on startup:

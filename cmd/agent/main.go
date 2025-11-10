@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/mutualEvg/metrics-server/internal/agent"
@@ -44,11 +45,10 @@ func main() {
 	}
 
 	workerPool.Start()
-	defer workerPool.Stop()
 
-	// Setup graceful shutdown
+	// Setup graceful shutdown - handle SIGTERM, SIGINT, SIGQUIT
 	signalChan := make(chan os.Signal, 1)
-	signal.Notify(signalChan, os.Interrupt)
+	signal.Notify(signalChan, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
 
 	// Start metric collection
 	ctx, cancel := context.WithCancel(context.Background())
@@ -74,11 +74,20 @@ func main() {
 	metricCollector.Start(ctx)
 
 	// Wait for shutdown signal
-	<-signalChan
-	fmt.Println("Received shutdown signal. Stopping agent...")
-	cancel() // Cancel all goroutines
+	sig := <-signalChan
+	log.Printf("Shutdown signal received: %v", sig)
+	log.Println("Stopping agent gracefully...")
 
-	// Give some time for final metrics to be processed
-	log.Println("Sending final metrics...")
-	time.Sleep(1 * time.Second)
+	// Cancel metric collection
+	cancel()
+
+	// Give collector time to send final batch of metrics
+	log.Println("Flushing final metrics...")
+	time.Sleep(2 * time.Second)
+
+	// Stop worker pool (waits for in-flight requests)
+	log.Println("Stopping worker pool...")
+	workerPool.Stop()
+
+	log.Println("Agent shutdown complete")
 }
