@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"flag"
 	"log"
 	"os"
@@ -31,6 +32,14 @@ type Config struct {
 	RetryConfig    retry.RetryConfig
 }
 
+// JSONConfig represents the JSON configuration file structure for agent
+type JSONConfig struct {
+	Address        string `json:"address"`
+	ReportInterval string `json:"report_interval"`
+	PollInterval   string `json:"poll_interval"`
+	CryptoKey      string `json:"crypto_key"`
+}
+
 // ParseConfig parses command line flags and environment variables
 func ParseConfig() *Config {
 	// Read flags
@@ -42,19 +51,44 @@ func ParseConfig() *Config {
 	flagKey := flag.String("k", "", "Key for SHA256 signature")
 	flagCryptoKey := flag.String("crypto-key", "", "Path to public key file for encryption")
 	flagRateLimit := flag.Int("l", 0, "Rate limit for concurrent requests (default: 10)")
+	flagConfig := flag.String("c", "", "Path to JSON configuration file")
+	flagConfigLong := flag.String("config", "", "Path to JSON configuration file")
 	flag.Parse()
 
 	if len(flag.Args()) > 0 {
 		log.Fatalf("Unknown flags: %v", flag.Args())
 	}
 
+	// Determine config file path (flag or env variable)
+	configPath := *flagConfig
+	if configPath == "" {
+		configPath = *flagConfigLong
+	}
+	if configPath == "" {
+		configPath = os.Getenv("CONFIG")
+	}
+
+	// Load JSON config if specified
+	var jsonConfig *JSONConfig
+	if configPath != "" {
+		var err error
+		jsonConfig, err = loadJSONConfig(configPath)
+		if err != nil {
+			log.Printf("Warning: Failed to load config file %s: %v", configPath, err)
+		} else {
+			log.Printf("Loaded configuration from %s", configPath)
+		}
+	}
+
 	config := &Config{}
 
-	// --- Address
+	// --- Address (with JSON support)
 	address := os.Getenv("ADDRESS")
 	if address == "" {
 		if *flagAddress != "" {
 			address = *flagAddress
+		} else if jsonConfig != nil && jsonConfig.Address != "" {
+			address = jsonConfig.Address
 		} else {
 			address = DefaultServerAddress
 		}
@@ -77,12 +111,14 @@ func ParseConfig() *Config {
 		log.Printf("SHA256 signature enabled")
 	}
 
-	// --- Crypto Key
+	// --- Crypto Key (with JSON support)
 	cryptoKeyEnv := os.Getenv("CRYPTO_KEY")
 	if cryptoKeyEnv != "" {
 		config.CryptoKey = cryptoKeyEnv
 	} else if *flagCryptoKey != "" {
 		config.CryptoKey = *flagCryptoKey
+	} else if jsonConfig != nil && jsonConfig.CryptoKey != "" {
+		config.CryptoKey = jsonConfig.CryptoKey
 	}
 
 	if config.CryptoKey != "" {
@@ -103,7 +139,7 @@ func ParseConfig() *Config {
 		config.RateLimit = DefaultRateLimit
 	}
 
-	// --- Report Interval
+	// --- Report Interval (with JSON support)
 	reportEnv := os.Getenv("REPORT_INTERVAL")
 	var reportSeconds int
 	if reportEnv != "" {
@@ -114,12 +150,18 @@ func ParseConfig() *Config {
 		reportSeconds = val
 	} else if *flagReport != 0 {
 		reportSeconds = *flagReport
+	} else if jsonConfig != nil && jsonConfig.ReportInterval != "" {
+		duration, err := time.ParseDuration(jsonConfig.ReportInterval)
+		if err != nil {
+			log.Fatalf("Invalid report_interval in config file: %v", err)
+		}
+		reportSeconds = int(duration.Seconds())
 	} else {
 		reportSeconds = DefaultReportInterval
 	}
 	config.ReportInterval = time.Duration(reportSeconds) * time.Second
 
-	// --- Poll Interval
+	// --- Poll Interval (with JSON support)
 	pollEnv := os.Getenv("POLL_INTERVAL")
 	var pollSeconds int
 	if pollEnv != "" {
@@ -130,6 +172,12 @@ func ParseConfig() *Config {
 		pollSeconds = val
 	} else if *flagPoll != 0 {
 		pollSeconds = *flagPoll
+	} else if jsonConfig != nil && jsonConfig.PollInterval != "" {
+		duration, err := time.ParseDuration(jsonConfig.PollInterval)
+		if err != nil {
+			log.Fatalf("Invalid poll_interval in config file: %v", err)
+		}
+		pollSeconds = int(duration.Seconds())
 	} else {
 		pollSeconds = DefaultPollInterval
 	}
@@ -171,4 +219,18 @@ func ParseConfig() *Config {
 		config.ServerAddress, config.PollInterval, config.ReportInterval, config.BatchSize, config.RateLimit, cryptoStatus)
 
 	return config
+}
+
+func loadJSONConfig(path string) (*JSONConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var config JSONConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, err
+	}
+
+	return &config, nil
 }

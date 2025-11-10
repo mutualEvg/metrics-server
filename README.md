@@ -49,6 +49,45 @@ The server and agent support RSA asymmetric encryption for securing metrics data
 
 See [ENCRYPTION.md](ENCRYPTION.md) for detailed setup and usage instructions.
 
+### JSON Configuration Files
+
+Both server and agent support configuration via JSON files for easier management:
+
+- **Server Config**: Specify via `-c` or `-config` flag, or `CONFIG` environment variable
+- **Agent Config**: Same approach as server
+- **Priority**: Environment variables > Flags > JSON config > Defaults
+- **All Options Supported**: address, intervals, storage, encryption keys, etc.
+
+Example server config:
+```json
+{
+    "address": "localhost:8080",
+    "restore": true,
+    "store_interval": "300s",
+    "store_file": "/path/to/file.db",
+    "database_dsn": "postgresql://...",
+    "crypto_key": "/path/to/private.pem"
+}
+```
+
+Example agent config:
+```json
+{
+    "address": "localhost:8080",
+    "report_interval": "10s",
+    "poll_interval": "2s",
+    "crypto_key": "/path/to/public.pem"
+}
+```
+
+Usage:
+```bash
+./server -c config/server.json
+./agent -c config/agent.json
+```
+
+See [JSON_CONFIG.md](JSON_CONFIG.md) for detailed documentation and examples.
+
 ### File Storage
 
 The server can persist metrics to disk and restore them on startup:
