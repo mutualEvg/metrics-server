@@ -27,6 +27,7 @@ type Config struct {
 	BatchSize      int
 	RateLimit      int
 	Key            string
+	CryptoKey      string // Path to public key file for encryption
 	RetryConfig    retry.RetryConfig
 }
 
@@ -39,6 +40,7 @@ func ParseConfig() *Config {
 	flagBatchSize := flag.Int("b", 0, "Batch size for metrics (default: 10, 0 = disable batching)")
 	flagDisableRetry := flag.Bool("disable-retry", false, "Disable retry logic for testing")
 	flagKey := flag.String("k", "", "Key for SHA256 signature")
+	flagCryptoKey := flag.String("crypto-key", "", "Path to public key file for encryption")
 	flagRateLimit := flag.Int("l", 0, "Rate limit for concurrent requests (default: 10)")
 	flag.Parse()
 
@@ -73,6 +75,18 @@ func ParseConfig() *Config {
 
 	if config.Key != "" {
 		log.Printf("SHA256 signature enabled")
+	}
+
+	// --- Crypto Key
+	cryptoKeyEnv := os.Getenv("CRYPTO_KEY")
+	if cryptoKeyEnv != "" {
+		config.CryptoKey = cryptoKeyEnv
+	} else if *flagCryptoKey != "" {
+		config.CryptoKey = *flagCryptoKey
+	}
+
+	if config.CryptoKey != "" {
+		log.Printf("Asymmetric encryption enabled with public key: %s", config.CryptoKey)
 	}
 
 	// --- Rate Limit
@@ -149,8 +163,12 @@ func ParseConfig() *Config {
 		config.RetryConfig.Intervals = []time.Duration{}
 	}
 
-	log.Printf("Agent starting with server=%s, poll=%v, report=%v, batch_size=%d, rate_limit=%d",
-		config.ServerAddress, config.PollInterval, config.ReportInterval, config.BatchSize, config.RateLimit)
+	cryptoStatus := "disabled"
+	if config.CryptoKey != "" {
+		cryptoStatus = "enabled"
+	}
+	log.Printf("Agent starting with server=%s, poll=%v, report=%v, batch_size=%d, rate_limit=%d, crypto=%s",
+		config.ServerAddress, config.PollInterval, config.ReportInterval, config.BatchSize, config.RateLimit, cryptoStatus)
 
 	return config
 }

@@ -184,4 +184,3 @@ func (r *RemoteAuditor) Notify(event Event) error {
 
 	return nil
 }
-

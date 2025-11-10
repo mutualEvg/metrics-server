@@ -266,4 +266,3 @@ func TestNewRemoteAuditorError(t *testing.T) {
 		t.Error("Expected error for empty URL")
 	}
 }
-
