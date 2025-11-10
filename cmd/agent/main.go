@@ -17,7 +17,7 @@ var (
 	buildVersion string = "N/A"
 	buildDate    string = "N/A"
 	buildCommit  string = "N/A"
-	
+
 	pollCount int64
 )
 
@@ -29,12 +29,20 @@ func printBuildInfo() {
 
 func main() {
 	printBuildInfo()
-	
+
 	// Parse configuration
 	config := agent.ParseConfig()
 
 	// Initialize worker pool
 	workerPool := worker.NewPool(config.RateLimit, config.ServerAddress, config.Key, config.RetryConfig)
+
+	// Load public key for encryption if configured
+	if config.CryptoKey != "" {
+		if err := workerPool.SetPublicKey(config.CryptoKey); err != nil {
+			log.Fatalf("Failed to load public key: %v", err)
+		}
+	}
+
 	workerPool.Start()
 	defer workerPool.Stop()
 
@@ -57,6 +65,12 @@ func main() {
 		config.RetryConfig,
 		&pollCount,
 	)
+
+	// Set crypto key for batch sending
+	if config.CryptoKey != "" {
+		metricCollector.SetCryptoKey(config.CryptoKey)
+	}
+
 	metricCollector.Start(ctx)
 
 	// Wait for shutdown signal

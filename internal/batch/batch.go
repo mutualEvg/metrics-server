@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/mutualEvg/metrics-server/internal/crypto"
 	"github.com/mutualEvg/metrics-server/internal/hash"
 	"github.com/mutualEvg/metrics-server/internal/models"
 	"github.com/mutualEvg/metrics-server/internal/retry"
@@ -68,8 +70,23 @@ func (b *Batch) GetAndClear() []models.Metrics {
 
 // Send sends a batch of metrics using the /updates/ endpoint
 func Send(metrics []models.Metrics, serverAddr, key string, retryConfig retry.RetryConfig) error {
+	return SendWithEncryption(metrics, serverAddr, key, "", retryConfig)
+}
+
+// SendWithEncryption sends a batch of metrics with optional encryption
+func SendWithEncryption(metrics []models.Metrics, serverAddr, key, publicKeyPath string, retryConfig retry.RetryConfig) error {
 	if len(metrics) == 0 {
 		return nil // Don't send empty batches
+	}
+
+	// Load public key if provided
+	var publicKey *rsa.PublicKey
+	if publicKeyPath != "" {
+		var err error
+		publicKey, err = crypto.LoadPublicKey(publicKeyPath)
+		if err != nil {
+			return fmt.Errorf("failed to load public key: %w", err)
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -92,9 +109,21 @@ func Send(metrics []models.Metrics, serverAddr, key string, retryConfig retry.Re
 			return fmt.Errorf("failed to close gzip writer: %w", err)
 		}
 
+		// Prepare body data (may be encrypted)
+		bodyData := compressedData.Bytes()
+
+		// Encrypt if public key is configured
+		if publicKey != nil {
+			encryptedData, err := crypto.EncryptChunked(bodyData, publicKey)
+			if err != nil {
+				return fmt.Errorf("failed to encrypt data: %w", err)
+			}
+			bodyData = encryptedData
+		}
+
 		// Create HTTP request
 		url := fmt.Sprintf("%s/updates/", serverAddr)
-		req, err := http.NewRequest("POST", url, &compressedData)
+		req, err := http.NewRequest("POST", url, bytes.NewReader(bodyData))
 		if err != nil {
 			return fmt.Errorf("failed to create request: %w", err)
 		}
@@ -102,7 +131,12 @@ func Send(metrics []models.Metrics, serverAddr, key string, retryConfig retry.Re
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Content-Encoding", "gzip")
 
-		// Add hash header if key is configured
+		// Add encryption header if data is encrypted
+		if publicKey != nil {
+			req.Header.Set("X-Encrypted", "true")
+		}
+
+		// Add hash header if key is configured (hash is computed before encryption)
 		if key != "" {
 			hashValue := hash.CalculateHash(compressedData.Bytes(), key)
 			req.Header.Set("HashSHA256", hashValue)

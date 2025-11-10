@@ -37,6 +37,18 @@ The server supports gzip compression for both requests and responses:
 
 The agent automatically sends compressed JSON data to reduce network traffic.
 
+### Asymmetric Encryption Support
+
+The server and agent support RSA asymmetric encryption for securing metrics data in transit:
+
+- **Agent**: Encrypts metrics using a public key (`-crypto-key` flag or `CRYPTO_KEY` env variable)
+- **Server**: Decrypts metrics using a private key (`-crypto-key` flag or `CRYPTO_KEY` env variable)
+- **Algorithm**: RSA-OAEP with SHA-256 hashing
+- **Chunked encryption**: Automatically handles large payloads
+- **Backward compatible**: Unencrypted requests work alongside encrypted ones
+
+See [ENCRYPTION.md](ENCRYPTION.md) for detailed setup and usage instructions.
+
 ### File Storage
 
 The server can persist metrics to disk and restore them on startup:

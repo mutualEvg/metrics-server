@@ -2,6 +2,7 @@
 package main
 
 import (
+	"crypto/rsa"
 	"fmt"
 	"net/http"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/mutualEvg/metrics-server/config"
 	"github.com/mutualEvg/metrics-server/internal/audit"
+	"github.com/mutualEvg/metrics-server/internal/crypto"
 	"github.com/mutualEvg/metrics-server/internal/handlers"
 	gzipmw "github.com/mutualEvg/metrics-server/internal/middleware"
 	"github.com/mutualEvg/metrics-server/storage"
@@ -35,7 +37,7 @@ func printBuildInfo() {
 
 func main() {
 	printBuildInfo()
-	
+
 	cfg := config.Load()
 
 	// Setup zerolog
@@ -144,6 +146,16 @@ func main() {
 	// Add middleware
 	r.Use(loggingMiddleware)
 
+	// Add decryption middleware if crypto key is configured
+	if cfg.CryptoKey != "" {
+		privateKey, err := loadPrivateKey(cfg.CryptoKey)
+		if err != nil {
+			log.Fatal().Err(err).Msg("Failed to load private key for decryption")
+		}
+		r.Use(gzipmw.DecryptionMiddleware(privateKey))
+		log.Info().Str("key_path", cfg.CryptoKey).Msg("Asymmetric decryption enabled")
+	}
+
 	// Add hash middleware BEFORE gzip middleware so it can verify compressed data
 	if cfg.Key != "" {
 		log.Info().Msg("SHA256 hash verification enabled")
@@ -222,4 +234,12 @@ func loggingMiddleware(next http.Handler) http.Handler {
 			Dur("duration", duration).
 			Msg("handled request")
 	})
+}
+
+func loadPrivateKey(path string) (*rsa.PrivateKey, error) {
+	privateKey, err := crypto.LoadPrivateKey(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load private key from %s: %w", path, err)
+	}
+	return privateKey, nil
 }
