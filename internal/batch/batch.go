@@ -70,23 +70,13 @@ func (b *Batch) GetAndClear() []models.Metrics {
 
 // Send sends a batch of metrics using the /updates/ endpoint
 func Send(metrics []models.Metrics, serverAddr, key string, retryConfig retry.RetryConfig) error {
-	return SendWithEncryption(metrics, serverAddr, key, "", retryConfig)
+	return SendWithEncryption(metrics, serverAddr, key, nil, retryConfig)
 }
 
 // SendWithEncryption sends a batch of metrics with optional encryption
-func SendWithEncryption(metrics []models.Metrics, serverAddr, key, publicKeyPath string, retryConfig retry.RetryConfig) error {
+func SendWithEncryption(metrics []models.Metrics, serverAddr, key string, publicKey *rsa.PublicKey, retryConfig retry.RetryConfig) error {
 	if len(metrics) == 0 {
 		return nil // Don't send empty batches
-	}
-
-	// Load public key if provided
-	var publicKey *rsa.PublicKey
-	if publicKeyPath != "" {
-		var err error
-		publicKey, err = crypto.LoadPublicKey(publicKeyPath)
-		if err != nil {
-			return fmt.Errorf("failed to load public key: %w", err)
-		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -114,7 +104,7 @@ func SendWithEncryption(metrics []models.Metrics, serverAddr, key, publicKeyPath
 
 		// Encrypt if public key is configured
 		if publicKey != nil {
-			encryptedData, err := crypto.EncryptChunked(bodyData, publicKey)
+			encryptedData, err := crypto.EncryptRSAChunked(bodyData, publicKey)
 			if err != nil {
 				return fmt.Errorf("failed to encrypt data: %w", err)
 			}

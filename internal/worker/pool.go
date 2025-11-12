@@ -50,19 +50,11 @@ func NewPool(rateLimit int, serverAddr, key string, retryConfig retry.RetryConfi
 }
 
 // SetPublicKey sets the public key for encryption
-func (p *Pool) SetPublicKey(keyPath string) error {
-	if keyPath == "" {
-		return nil
-	}
-
-	publicKey, err := crypto.LoadPublicKey(keyPath)
-	if err != nil {
-		return fmt.Errorf("failed to load public key: %w", err)
-	}
-
+func (p *Pool) SetPublicKey(publicKey *rsa.PublicKey) {
 	p.publicKey = publicKey
-	log.Printf("Public key loaded for encryption")
-	return nil
+	if publicKey != nil {
+		log.Printf("Public key configured for encryption")
+	}
 }
 
 // Start initializes the worker pool
@@ -138,7 +130,7 @@ func (p *Pool) sendMetric(metricData MetricData) {
 
 		// Encrypt if public key is configured
 		if p.publicKey != nil {
-			encryptedData, err := crypto.EncryptChunked(bodyData, p.publicKey)
+			encryptedData, err := crypto.EncryptRSAChunked(bodyData, p.publicKey)
 			if err != nil {
 				return fmt.Errorf("failed to encrypt data: %w", err)
 			}

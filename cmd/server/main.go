@@ -249,7 +249,7 @@ func loggingMiddleware(next http.Handler) http.Handler {
 }
 
 func loadPrivateKey(path string) (*rsa.PrivateKey, error) {
-	privateKey, err := crypto.LoadPrivateKey(path)
+	privateKey, err := crypto.LoadPrivateKeyFromFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load private key from %s: %w", path, err)
 	}

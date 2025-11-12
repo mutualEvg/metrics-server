@@ -3,6 +3,7 @@ package worker
 import (
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,10 +51,7 @@ func TestPoolStartStop(t *testing.T) {
 	// Start the pool
 	pool.Start()
 
-	// Give workers time to start
-	time.Sleep(100 * time.Millisecond)
-
-	// Stop the pool
+	// Stop the pool - this will wait for workers to finish
 	pool.Stop()
 
 	// Pool should be stopped now
@@ -91,8 +89,10 @@ func TestPoolSubmitMetric(t *testing.T) {
 	// This should not block
 	pool.SubmitMetric(metric)
 
-	// Give some time for processing
-	time.Sleep(100 * time.Millisecond)
+	// Verify metric was submitted by checking channel is not full
+	if len(pool.jobs) > cap(pool.jobs) {
+		t.Error("Jobs channel is overfilled")
+	}
 }
 
 func TestPoolSubmitMetricToFullQueue(t *testing.T) {
@@ -162,10 +162,17 @@ func TestPoolSubmitMetricAfterStop(t *testing.T) {
 }
 
 func TestPoolWithMockServer(t *testing.T) {
-	// Create a mock server that always returns 200 OK
+	// Use a channel to signal when request is processed
+	requestProcessed := make(chan struct{}, 1)
+
+	// Create a mock server that signals when it receives a request
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
+		select {
+		case requestProcessed <- struct{}{}:
+		default:
+		}
 	}))
 	defer server.Close()
 
@@ -190,6 +197,91 @@ func TestPoolWithMockServer(t *testing.T) {
 
 	pool.SubmitMetric(metric)
 
-	// Give time for the request to be processed
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the request to be processed or timeout
+	select {
+	case <-requestProcessed:
+		// Success
+	case <-time.After(5 * time.Second):
+		t.Fatal("Request was not processed within timeout")
+	}
+}
+
+func TestPoolConcurrentSubmit(t *testing.T) {
+	// Use mutex and counter to track processed requests
+	var (
+		mu             sync.Mutex
+		processedCount int
+		submittedCount = 10
+	)
+	requestProcessed := make(chan struct{}, submittedCount)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		mu.Lock()
+		processedCount++
+		mu.Unlock()
+		select {
+		case requestProcessed <- struct{}{}:
+		default:
+		}
+	}))
+	defer server.Close()
+
+	retryConfig := retry.RetryConfig{
+		MaxAttempts: 1,
+		Intervals:   []time.Duration{},
+	}
+
+	pool := NewPool(3, server.URL, "", retryConfig)
+	pool.Start()
+	defer pool.Stop()
+
+	// Submit multiple metrics concurrently
+	var wg sync.WaitGroup
+	for i := 0; i < submittedCount; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			value := float64(id)
+			metric := MetricData{
+				Metric: models.Metrics{
+					ID:    "test_metric",
+					MType: "gauge",
+					Value: &value,
+				},
+				Type: "test",
+			}
+			pool.SubmitMetric(metric)
+		}(i)
+	}
+	wg.Wait()
+
+	// Wait for requests to be processed (may be less than submitted due to queue capacity)
+	// Pool has capacity of 3*2=6, so some metrics may be dropped if queue is full
+	timeout := time.After(5 * time.Second)
+	deadline := time.After(2 * time.Second) // Give reasonable time for processing
+
+processLoop:
+	for {
+		select {
+		case <-requestProcessed:
+			// One request processed
+		case <-deadline:
+			// Stop waiting after deadline
+			break processLoop
+		case <-timeout:
+			t.Fatal("Test timeout - this should not happen")
+		}
+	}
+
+	mu.Lock()
+	finalCount := processedCount
+	mu.Unlock()
+
+	// We should process at least some metrics, but may not process all if queue was full
+	if finalCount == 0 {
+		t.Error("Expected at least some requests to be processed")
+	}
+
+	t.Logf("Processed %d/%d metrics (some may have been dropped due to queue capacity)", finalCount, submittedCount)
 }

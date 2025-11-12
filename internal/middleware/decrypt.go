@@ -31,7 +31,7 @@ func DecryptionMiddleware(privateKey *rsa.PrivateKey) func(http.Handler) http.Ha
 			r.Body.Close()
 
 			// Decrypt the body
-			decryptedBody, err := crypto.DecryptChunked(encryptedBody, privateKey)
+			decryptedBody, err := crypto.DecryptRSAChunked(encryptedBody, privateKey)
 			if err != nil {
 				log.Printf("Failed to decrypt body: %v", err)
 				http.Error(w, "Failed to decrypt request", http.StatusBadRequest)

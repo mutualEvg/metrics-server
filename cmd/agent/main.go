@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rsa"
 	"fmt"
 	"log"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/mutualEvg/metrics-server/internal/agent"
 	"github.com/mutualEvg/metrics-server/internal/collector"
+	"github.com/mutualEvg/metrics-server/internal/crypto"
 	"github.com/mutualEvg/metrics-server/internal/worker"
 )
 
@@ -34,16 +36,20 @@ func main() {
 	// Parse configuration
 	config := agent.ParseConfig()
 
-	// Initialize worker pool
-	workerPool := worker.NewPool(config.RateLimit, config.ServerAddress, config.Key, config.RetryConfig)
-
 	// Load public key for encryption if configured
+	var publicKey *rsa.PublicKey
 	if config.CryptoKey != "" {
-		if err := workerPool.SetPublicKey(config.CryptoKey); err != nil {
-			log.Fatalf("Failed to load public key: %v", err)
+		var err error
+		publicKey, err = crypto.LoadPublicKeyFromFile(config.CryptoKey)
+		if err != nil {
+			log.Fatalf("Failed to load public key from %s: %v", config.CryptoKey, err)
 		}
+		log.Printf("Public key loaded from %s", config.CryptoKey)
 	}
 
+	// Initialize worker pool
+	workerPool := worker.NewPool(config.RateLimit, config.ServerAddress, config.Key, config.RetryConfig)
+	workerPool.SetPublicKey(publicKey)
 	workerPool.Start()
 
 	// Setup graceful shutdown - handle SIGTERM, SIGINT, SIGQUIT
@@ -65,11 +71,7 @@ func main() {
 		config.RetryConfig,
 		&pollCount,
 	)
-
-	// Set crypto key for batch sending
-	if config.CryptoKey != "" {
-		metricCollector.SetCryptoKey(config.CryptoKey)
-	}
+	metricCollector.SetPublicKey(publicKey)
 
 	metricCollector.Start(ctx)
 

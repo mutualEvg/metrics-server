@@ -32,11 +32,11 @@ func TestEncryptedCommunication(t *testing.T) {
 	privPath := filepath.Join(tmpDir, "private.pem")
 	pubPath := filepath.Join(tmpDir, "public.pem")
 
-	if err := crypto.SavePrivateKey(privPath, privateKey); err != nil {
+	if err := crypto.SavePrivateKeyToFile(privPath, privateKey); err != nil {
 		t.Fatalf("Failed to save private key: %v", err)
 	}
 
-	if err := crypto.SavePublicKey(pubPath, publicKey); err != nil {
+	if err := crypto.SavePublicKeyToFile(pubPath, publicKey); err != nil {
 		t.Fatalf("Failed to save public key: %v", err)
 	}
 
@@ -81,10 +81,14 @@ func TestEncryptedCommunication(t *testing.T) {
 			Intervals:   []time.Duration{},
 		}
 
-		pool := worker.NewPool(1, ts.URL, "", retryConfig)
-		if err := pool.SetPublicKey(pubPath); err != nil {
-			t.Fatalf("Failed to set public key: %v", err)
+		// Load public key
+		loadedPublicKey, err := crypto.LoadPublicKeyFromFile(pubPath)
+		if err != nil {
+			t.Fatalf("Failed to load public key: %v", err)
 		}
+
+		pool := worker.NewPool(1, ts.URL, "", retryConfig)
+		pool.SetPublicKey(loadedPublicKey)
 		pool.Start()
 		defer pool.Stop()
 
@@ -130,11 +134,11 @@ func TestBatchEncryptedCommunication(t *testing.T) {
 	privPath := filepath.Join(tmpDir, "private.pem")
 	pubPath := filepath.Join(tmpDir, "public.pem")
 
-	if err := crypto.SavePrivateKey(privPath, privateKey); err != nil {
+	if err := crypto.SavePrivateKeyToFile(privPath, privateKey); err != nil {
 		t.Fatalf("Failed to save private key: %v", err)
 	}
 
-	if err := crypto.SavePublicKey(pubPath, publicKey); err != nil {
+	if err := crypto.SavePublicKeyToFile(pubPath, publicKey); err != nil {
 		t.Fatalf("Failed to save public key: %v", err)
 	}
 
@@ -175,6 +179,12 @@ func TestBatchEncryptedCommunication(t *testing.T) {
 		Intervals:   []time.Duration{},
 	}
 
+	// Load public key
+	loadedPublicKey, err := crypto.LoadPublicKeyFromFile(pubPath)
+	if err != nil {
+		t.Fatalf("Failed to load public key: %v", err)
+	}
+
 	// Create test metrics
 	value1 := 10.5
 	value2 := 20.5
@@ -198,7 +208,7 @@ func TestBatchEncryptedCommunication(t *testing.T) {
 	}
 
 	// Send batch with encryption
-	err = batch.SendWithEncryption(metrics, ts.URL, "", pubPath, retryConfig)
+	err = batch.SendWithEncryption(metrics, ts.URL, "", loadedPublicKey, retryConfig)
 	if err != nil {
 		t.Fatalf("Failed to send encrypted batch: %v", err)
 	}
@@ -307,13 +317,8 @@ func TestEncryptionWithInvalidKey(t *testing.T) {
 		t.Fatalf("Failed to create invalid key file: %v", err)
 	}
 
-	retryConfig := retry.RetryConfig{
-		MaxAttempts: 1,
-		Intervals:   []time.Duration{},
-	}
-
-	pool := worker.NewPool(1, "http://localhost:8080", "", retryConfig)
-	err := pool.SetPublicKey(invalidKeyPath)
+	// Try to load invalid key - should fail
+	_, err := crypto.LoadPublicKeyFromFile(invalidKeyPath)
 	if err == nil {
 		t.Error("Expected error when loading invalid key, got nil")
 	}
@@ -332,11 +337,11 @@ func TestLargePayloadEncryption(t *testing.T) {
 	privPath := filepath.Join(tmpDir, "private.pem")
 	pubPath := filepath.Join(tmpDir, "public.pem")
 
-	if err := crypto.SavePrivateKey(privPath, privateKey); err != nil {
+	if err := crypto.SavePrivateKeyToFile(privPath, privateKey); err != nil {
 		t.Fatalf("Failed to save private key: %v", err)
 	}
 
-	if err := crypto.SavePublicKey(pubPath, publicKey); err != nil {
+	if err := crypto.SavePublicKeyToFile(pubPath, publicKey); err != nil {
 		t.Fatalf("Failed to save public key: %v", err)
 	}
 
@@ -374,6 +379,12 @@ func TestLargePayloadEncryption(t *testing.T) {
 		Intervals:   []time.Duration{},
 	}
 
+	// Load public key
+	loadedPublicKey, err := crypto.LoadPublicKeyFromFile(pubPath)
+	if err != nil {
+		t.Fatalf("Failed to load public key: %v", err)
+	}
+
 	// Create large batch of metrics
 	metrics := make([]models.Metrics, 100)
 	for i := 0; i < 100; i++ {
@@ -386,7 +397,7 @@ func TestLargePayloadEncryption(t *testing.T) {
 	}
 
 	// Send large batch with encryption
-	err = batch.SendWithEncryption(metrics, ts.URL, "", pubPath, retryConfig)
+	err = batch.SendWithEncryption(metrics, ts.URL, "", loadedPublicKey, retryConfig)
 	if err != nil {
 		t.Fatalf("Failed to send large encrypted batch: %v", err)
 	}

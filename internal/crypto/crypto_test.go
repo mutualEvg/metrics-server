@@ -8,7 +8,7 @@ import (
 )
 
 func TestGenerateKeyPair(t *testing.T) {
-	privateKey, publicKey, err := GenerateKeyPair(2048)
+	privateKey, publicKey, err := GenerateKeyPair(DefaultKeySize)
 	if err != nil {
 		t.Fatalf("Failed to generate key pair: %v", err)
 	}
@@ -21,13 +21,20 @@ func TestGenerateKeyPair(t *testing.T) {
 		t.Fatal("Public key is nil")
 	}
 
-	if privateKey.N.BitLen() != 2048 {
-		t.Errorf("Expected 2048-bit key, got %d-bit", privateKey.N.BitLen())
+	if privateKey.N.BitLen() != DefaultKeySize {
+		t.Errorf("Expected %d-bit key, got %d-bit", DefaultKeySize, privateKey.N.BitLen())
 	}
 }
 
-func TestEncryptDecrypt(t *testing.T) {
-	privateKey, publicKey, err := GenerateKeyPair(2048)
+func TestGenerateKeyPairMinimumSize(t *testing.T) {
+	_, _, err := GenerateKeyPair(1024) // Less than minimum
+	if err == nil {
+		t.Error("Expected error for key size less than minimum")
+	}
+}
+
+func TestEncryptDecryptRSA(t *testing.T) {
+	privateKey, publicKey, err := GenerateKeyPair(DefaultKeySize)
 	if err != nil {
 		t.Fatalf("Failed to generate key pair: %v", err)
 	}
@@ -35,7 +42,7 @@ func TestEncryptDecrypt(t *testing.T) {
 	testData := []byte("Hello, World!")
 
 	// Encrypt
-	ciphertext, err := Encrypt(testData, publicKey)
+	ciphertext, err := EncryptRSA(testData, publicKey)
 	if err != nil {
 		t.Fatalf("Failed to encrypt: %v", err)
 	}
@@ -45,7 +52,7 @@ func TestEncryptDecrypt(t *testing.T) {
 	}
 
 	// Decrypt
-	plaintext, err := Decrypt(ciphertext, privateKey)
+	plaintext, err := DecryptRSA(ciphertext, privateKey)
 	if err != nil {
 		t.Fatalf("Failed to decrypt: %v", err)
 	}
@@ -55,8 +62,8 @@ func TestEncryptDecrypt(t *testing.T) {
 	}
 }
 
-func TestEncryptDecryptChunked(t *testing.T) {
-	privateKey, publicKey, err := GenerateKeyPair(2048)
+func TestEncryptDecryptRSAChunked(t *testing.T) {
+	privateKey, publicKey, err := GenerateKeyPair(DefaultKeySize)
 	if err != nil {
 		t.Fatalf("Failed to generate key pair: %v", err)
 	}
@@ -86,13 +93,13 @@ func TestEncryptDecryptChunked(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Encrypt
-			ciphertext, err := EncryptChunked(tt.data, publicKey)
+			ciphertext, err := EncryptRSAChunked(tt.data, publicKey)
 			if err != nil {
 				t.Fatalf("Failed to encrypt chunked data: %v", err)
 			}
 
 			// Decrypt
-			plaintext, err := DecryptChunked(ciphertext, privateKey)
+			plaintext, err := DecryptRSAChunked(ciphertext, privateKey)
 			if err != nil {
 				t.Fatalf("Failed to decrypt chunked data: %v", err)
 			}
@@ -105,7 +112,7 @@ func TestEncryptDecryptChunked(t *testing.T) {
 }
 
 func TestSaveLoadPrivateKey(t *testing.T) {
-	privateKey, _, err := GenerateKeyPair(2048)
+	privateKey, _, err := GenerateKeyPair(DefaultKeySize)
 	if err != nil {
 		t.Fatalf("Failed to generate key pair: %v", err)
 	}
@@ -115,13 +122,13 @@ func TestSaveLoadPrivateKey(t *testing.T) {
 	keyPath := filepath.Join(tmpDir, "private.pem")
 
 	// Save
-	err = SavePrivateKey(keyPath, privateKey)
+	err = SavePrivateKeyToFile(keyPath, privateKey)
 	if err != nil {
 		t.Fatalf("Failed to save private key: %v", err)
 	}
 
 	// Load
-	loadedKey, err := LoadPrivateKey(keyPath)
+	loadedKey, err := LoadPrivateKeyFromFile(keyPath)
 	if err != nil {
 		t.Fatalf("Failed to load private key: %v", err)
 	}
@@ -133,7 +140,7 @@ func TestSaveLoadPrivateKey(t *testing.T) {
 }
 
 func TestSaveLoadPublicKey(t *testing.T) {
-	_, publicKey, err := GenerateKeyPair(2048)
+	_, publicKey, err := GenerateKeyPair(DefaultKeySize)
 	if err != nil {
 		t.Fatalf("Failed to generate key pair: %v", err)
 	}
@@ -143,13 +150,13 @@ func TestSaveLoadPublicKey(t *testing.T) {
 	keyPath := filepath.Join(tmpDir, "public.pem")
 
 	// Save
-	err = SavePublicKey(keyPath, publicKey)
+	err = SavePublicKeyToFile(keyPath, publicKey)
 	if err != nil {
 		t.Fatalf("Failed to save public key: %v", err)
 	}
 
 	// Load
-	loadedKey, err := LoadPublicKey(keyPath)
+	loadedKey, err := LoadPublicKeyFromFile(keyPath)
 	if err != nil {
 		t.Fatalf("Failed to load public key: %v", err)
 	}
@@ -164,14 +171,14 @@ func TestLoadInvalidFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	t.Run("load non-existent private key", func(t *testing.T) {
-		_, err := LoadPrivateKey(filepath.Join(tmpDir, "nonexistent.pem"))
+		_, err := LoadPrivateKeyFromFile(filepath.Join(tmpDir, "nonexistent.pem"))
 		if err == nil {
 			t.Error("Expected error loading non-existent file")
 		}
 	})
 
 	t.Run("load non-existent public key", func(t *testing.T) {
-		_, err := LoadPublicKey(filepath.Join(tmpDir, "nonexistent.pem"))
+		_, err := LoadPublicKeyFromFile(filepath.Join(tmpDir, "nonexistent.pem"))
 		if err == nil {
 			t.Error("Expected error loading non-existent file")
 		}
@@ -184,12 +191,12 @@ func TestLoadInvalidFiles(t *testing.T) {
 			t.Fatalf("Failed to create invalid file: %v", err)
 		}
 
-		_, err = LoadPrivateKey(invalidPath)
+		_, err = LoadPrivateKeyFromFile(invalidPath)
 		if err == nil {
 			t.Error("Expected error loading invalid PEM file")
 		}
 
-		_, err = LoadPublicKey(invalidPath)
+		_, err = LoadPublicKeyFromFile(invalidPath)
 		if err == nil {
 			t.Error("Expected error loading invalid PEM file")
 		}
@@ -198,7 +205,7 @@ func TestLoadInvalidFiles(t *testing.T) {
 
 func TestEncryptDecryptRoundTrip(t *testing.T) {
 	// Generate keys
-	privateKey, publicKey, err := GenerateKeyPair(2048)
+	privateKey, publicKey, err := GenerateKeyPair(DefaultKeySize)
 	if err != nil {
 		t.Fatalf("Failed to generate key pair: %v", err)
 	}
@@ -208,23 +215,23 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 	privPath := filepath.Join(tmpDir, "private.pem")
 	pubPath := filepath.Join(tmpDir, "public.pem")
 
-	err = SavePrivateKey(privPath, privateKey)
+	err = SavePrivateKeyToFile(privPath, privateKey)
 	if err != nil {
 		t.Fatalf("Failed to save private key: %v", err)
 	}
 
-	err = SavePublicKey(pubPath, publicKey)
+	err = SavePublicKeyToFile(pubPath, publicKey)
 	if err != nil {
 		t.Fatalf("Failed to save public key: %v", err)
 	}
 
 	// Load keys from files
-	loadedPriv, err := LoadPrivateKey(privPath)
+	loadedPriv, err := LoadPrivateKeyFromFile(privPath)
 	if err != nil {
 		t.Fatalf("Failed to load private key: %v", err)
 	}
 
-	loadedPub, err := LoadPublicKey(pubPath)
+	loadedPub, err := LoadPublicKeyFromFile(pubPath)
 	if err != nil {
 		t.Fatalf("Failed to load public key: %v", err)
 	}
@@ -232,12 +239,12 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 	// Test encryption/decryption with loaded keys
 	testData := []byte("Secret message for testing")
 
-	ciphertext, err := EncryptChunked(testData, loadedPub)
+	ciphertext, err := EncryptRSAChunked(testData, loadedPub)
 	if err != nil {
 		t.Fatalf("Failed to encrypt with loaded public key: %v", err)
 	}
 
-	plaintext, err := DecryptChunked(ciphertext, loadedPriv)
+	plaintext, err := DecryptRSAChunked(ciphertext, loadedPriv)
 	if err != nil {
 		t.Fatalf("Failed to decrypt with loaded private key: %v", err)
 	}
@@ -247,44 +254,97 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 	}
 }
 
-func BenchmarkEncrypt(b *testing.B) {
-	_, publicKey, _ := GenerateKeyPair(2048)
+func TestEncryptRSAWithNilKey(t *testing.T) {
+	_, err := EncryptRSA([]byte("test"), nil)
+	if err == nil {
+		t.Error("Expected error when encrypting with nil key")
+	}
+}
+
+func TestDecryptRSAWithNilKey(t *testing.T) {
+	_, err := DecryptRSA([]byte("test"), nil)
+	if err == nil {
+		t.Error("Expected error when decrypting with nil key")
+	}
+}
+
+func TestParsePEMFunctions(t *testing.T) {
+	privateKey, publicKey, err := GenerateKeyPair(DefaultKeySize)
+	if err != nil {
+		t.Fatalf("Failed to generate key pair: %v", err)
+	}
+
+	t.Run("encode and parse public key PEM", func(t *testing.T) {
+		pemData, err := EncodePublicKeyPEM(publicKey)
+		if err != nil {
+			t.Fatalf("Failed to encode public key: %v", err)
+		}
+
+		parsedKey, err := ParsePublicKeyPEM(pemData)
+		if err != nil {
+			t.Fatalf("Failed to parse public key PEM: %v", err)
+		}
+
+		if publicKey.N.Cmp(parsedKey.N) != 0 {
+			t.Error("Parsed public key doesn't match original")
+		}
+	})
+
+	t.Run("encode and parse private key PEM", func(t *testing.T) {
+		pemData, err := EncodePrivateKeyPEM(privateKey)
+		if err != nil {
+			t.Fatalf("Failed to encode private key: %v", err)
+		}
+
+		parsedKey, err := ParsePrivateKeyPEM(pemData)
+		if err != nil {
+			t.Fatalf("Failed to parse private key PEM: %v", err)
+		}
+
+		if privateKey.N.Cmp(parsedKey.N) != 0 {
+			t.Error("Parsed private key doesn't match original")
+		}
+	})
+}
+
+func BenchmarkEncryptRSA(b *testing.B) {
+	_, publicKey, _ := GenerateKeyPair(DefaultKeySize)
 	data := []byte("Test data for benchmarking")
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = Encrypt(data, publicKey)
+		_, _ = EncryptRSA(data, publicKey)
 	}
 }
 
-func BenchmarkDecrypt(b *testing.B) {
-	privKey, publicKey, _ := GenerateKeyPair(2048)
+func BenchmarkDecryptRSA(b *testing.B) {
+	privKey, publicKey, _ := GenerateKeyPair(DefaultKeySize)
 	data := []byte("Test data for benchmarking")
-	ciphertext, _ := Encrypt(data, publicKey)
+	ciphertext, _ := EncryptRSA(data, publicKey)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = Decrypt(ciphertext, privKey)
+		_, _ = DecryptRSA(ciphertext, privKey)
 	}
 }
 
-func BenchmarkEncryptChunked(b *testing.B) {
-	_, publicKey, _ := GenerateKeyPair(2048)
+func BenchmarkEncryptRSAChunked(b *testing.B) {
+	_, publicKey, _ := GenerateKeyPair(DefaultKeySize)
 	data := bytes.Repeat([]byte("A"), 1000)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = EncryptChunked(data, publicKey)
+		_, _ = EncryptRSAChunked(data, publicKey)
 	}
 }
 
-func BenchmarkDecryptChunked(b *testing.B) {
-	privKey, publicKey, _ := GenerateKeyPair(2048)
+func BenchmarkDecryptRSAChunked(b *testing.B) {
+	privKey, publicKey, _ := GenerateKeyPair(DefaultKeySize)
 	data := bytes.Repeat([]byte("A"), 1000)
-	ciphertext, _ := EncryptChunked(data, publicKey)
+	ciphertext, _ := EncryptRSAChunked(data, publicKey)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = DecryptChunked(ciphertext, privKey)
+		_, _ = DecryptRSAChunked(ciphertext, privKey)
 	}
 }

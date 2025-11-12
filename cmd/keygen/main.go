@@ -23,13 +23,13 @@ func main() {
 	}
 
 	// Save private key
-	if err := crypto.SavePrivateKey(*privPath, privateKey); err != nil {
+	if err := crypto.SavePrivateKeyToFile(*privPath, privateKey); err != nil {
 		log.Fatalf("Failed to save private key: %v", err)
 	}
 	fmt.Printf("Private key saved to: %s\n", *privPath)
 
 	// Save public key
-	if err := crypto.SavePublicKey(*pubPath, publicKey); err != nil {
+	if err := crypto.SavePublicKeyToFile(*pubPath, publicKey); err != nil {
 		log.Fatalf("Failed to save public key: %v", err)
 	}
 	fmt.Printf("Public key saved to: %s\n", *pubPath)
