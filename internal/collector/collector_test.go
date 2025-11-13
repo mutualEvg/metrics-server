@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -85,12 +86,21 @@ func TestCollectorStart(t *testing.T) {
 	// Start the collector
 	collector.Start(ctx)
 
-	// Wait a bit for some metrics to be collected
-	time.Sleep(150 * time.Millisecond)
+	// Poll until count increases or timeout
+	timeout := time.After(500 * time.Millisecond)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
 
-	// Check that poll count increased
-	if pollCount == 0 {
-		t.Error("Poll count should have increased")
+	for {
+		select {
+		case <-ticker.C:
+			if atomic.LoadInt64(&pollCount) > 0 {
+				// Success - poll count increased
+				return
+			}
+		case <-timeout:
+			t.Fatal("Poll count did not increase within timeout")
+		}
 	}
 }
 
@@ -112,11 +122,9 @@ func TestCollectorRuntimeMetrics(t *testing.T) {
 	// Start the collector
 	collector.Start(ctx)
 
-	// Wait for some metrics to be collected
-	time.Sleep(100 * time.Millisecond)
-
-	// Try to read from runtime channel (non-blocking)
+	// Wait for metrics with polling
 	runtimeChan := collector.GetRuntimeChan()
+	timeout := time.After(500 * time.Millisecond)
 
 	select {
 	case metric := <-runtimeChan:
@@ -130,9 +138,9 @@ func TestCollectorRuntimeMetrics(t *testing.T) {
 		if metric.Type != "runtime" {
 			t.Error("Metric type should be 'runtime'")
 		}
-	case <-time.After(50 * time.Millisecond):
-		// It's okay if no metrics are ready yet
-		t.Log("No runtime metrics in channel yet")
+	case <-timeout:
+		// It's okay if no metrics are ready - channels are buffered and may not fill immediately
+		t.Log("No runtime metrics in channel within timeout (acceptable)")
 	}
 }
 
@@ -154,11 +162,9 @@ func TestCollectorSystemMetrics(t *testing.T) {
 	// Start the collector
 	collector.Start(ctx)
 
-	// Wait for some metrics to be collected
-	time.Sleep(100 * time.Millisecond)
-
-	// Try to read from system channel (non-blocking)
+	// Wait for metrics with polling
 	systemChan := collector.GetSystemChan()
+	timeout := time.After(500 * time.Millisecond)
 
 	select {
 	case metric := <-systemChan:
@@ -172,9 +178,9 @@ func TestCollectorSystemMetrics(t *testing.T) {
 		if metric.Type != "system" {
 			t.Error("Metric type should be 'system'")
 		}
-	case <-time.After(50 * time.Millisecond):
-		// It's okay if no metrics are ready yet
-		t.Log("No system metrics in channel yet")
+	case <-timeout:
+		// It's okay if no metrics are ready - channels are buffered and may not fill immediately
+		t.Log("No system metrics in channel within timeout (acceptable)")
 	}
 }
 
@@ -201,9 +207,22 @@ func TestCollectorBatchMode(t *testing.T) {
 	// Start the collector
 	collector.Start(ctx)
 
-	// Wait for at least one report interval
-	time.Sleep(150 * time.Millisecond)
+	// Poll until at least one poll cycle completes
+	timeout := time.After(500 * time.Millisecond)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
 
-	// In batch mode, metrics should be processed differently
-	// This is mainly a smoke test to ensure batch mode doesn't crash
+	for {
+		select {
+		case <-ticker.C:
+			if atomic.LoadInt64(&pollCount) > 0 {
+				// At least one batch has been prepared
+				return
+			}
+		case <-timeout:
+			// Batch mode doesn't crash - that's the main test
+			t.Log("Batch mode ran without crashing (success)")
+			return
+		}
+	}
 }

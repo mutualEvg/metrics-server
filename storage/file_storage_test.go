@@ -121,12 +121,21 @@ func TestPeriodicSaver(t *testing.T) {
 	storage.UpdateGauge("periodic_gauge", 77.77)
 	storage.UpdateCounter("periodic_counter", 5)
 
-	// Wait for periodic save
-	time.Sleep(200 * time.Millisecond)
+	// Poll for file to be created (periodic save should trigger)
+	timeout := time.After(1 * time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
 
-	// Verify file was created
-	if !fileManager.FileExists() {
-		t.Error("File should exist after periodic save")
+	fileCreated := false
+	for !fileCreated {
+		select {
+		case <-ticker.C:
+			if fileManager.FileExists() {
+				fileCreated = true
+			}
+		case <-timeout:
+			t.Fatal("File was not created within timeout")
+		}
 	}
 
 	// Load and verify data

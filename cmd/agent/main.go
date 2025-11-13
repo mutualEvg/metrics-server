@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"crypto/rsa"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/mutualEvg/metrics-server/internal/agent"
 	"github.com/mutualEvg/metrics-server/internal/collector"
+	"github.com/mutualEvg/metrics-server/internal/crypto"
 	"github.com/mutualEvg/metrics-server/internal/worker"
 )
 
@@ -17,7 +20,7 @@ var (
 	buildVersion string = "N/A"
 	buildDate    string = "N/A"
 	buildCommit  string = "N/A"
-	
+
 	pollCount int64
 )
 
@@ -29,18 +32,29 @@ func printBuildInfo() {
 
 func main() {
 	printBuildInfo()
-	
+
 	// Parse configuration
 	config := agent.ParseConfig()
 
+	// Load public key for encryption if configured
+	var publicKey *rsa.PublicKey
+	if config.CryptoKey != "" {
+		var err error
+		publicKey, err = crypto.LoadPublicKeyFromFile(config.CryptoKey)
+		if err != nil {
+			log.Fatalf("Failed to load public key from %s: %v", config.CryptoKey, err)
+		}
+		log.Printf("Public key loaded from %s", config.CryptoKey)
+	}
+
 	// Initialize worker pool
 	workerPool := worker.NewPool(config.RateLimit, config.ServerAddress, config.Key, config.RetryConfig)
+	workerPool.SetPublicKey(publicKey)
 	workerPool.Start()
-	defer workerPool.Stop()
 
-	// Setup graceful shutdown
+	// Setup graceful shutdown - handle SIGTERM, SIGINT, SIGQUIT
 	signalChan := make(chan os.Signal, 1)
-	signal.Notify(signalChan, os.Interrupt)
+	signal.Notify(signalChan, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
 
 	// Start metric collection
 	ctx, cancel := context.WithCancel(context.Background())
@@ -57,14 +71,25 @@ func main() {
 		config.RetryConfig,
 		&pollCount,
 	)
+	metricCollector.SetPublicKey(publicKey)
+
 	metricCollector.Start(ctx)
 
 	// Wait for shutdown signal
-	<-signalChan
-	fmt.Println("Received shutdown signal. Stopping agent...")
-	cancel() // Cancel all goroutines
+	sig := <-signalChan
+	log.Printf("Shutdown signal received: %v", sig)
+	log.Println("Stopping agent gracefully...")
 
-	// Give some time for final metrics to be processed
-	log.Println("Sending final metrics...")
-	time.Sleep(1 * time.Second)
+	// Cancel metric collection
+	cancel()
+
+	// Give collector time to send final batch of metrics
+	log.Println("Flushing final metrics...")
+	time.Sleep(2 * time.Second)
+
+	// Stop worker pool (waits for in-flight requests)
+	log.Println("Stopping worker pool...")
+	workerPool.Stop()
+
+	log.Println("Agent shutdown complete")
 }

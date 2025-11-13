@@ -2,6 +2,8 @@
 package main
 
 import (
+	"context"
+	"crypto/rsa"
 	"fmt"
 	"net/http"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/mutualEvg/metrics-server/config"
 	"github.com/mutualEvg/metrics-server/internal/audit"
+	"github.com/mutualEvg/metrics-server/internal/crypto"
 	"github.com/mutualEvg/metrics-server/internal/handlers"
 	gzipmw "github.com/mutualEvg/metrics-server/internal/middleware"
 	"github.com/mutualEvg/metrics-server/storage"
@@ -35,7 +38,7 @@ func printBuildInfo() {
 
 func main() {
 	printBuildInfo()
-	
+
 	cfg := config.Load()
 
 	// Setup zerolog
@@ -47,6 +50,8 @@ func main() {
 	// 3. Memory storage (fallback)
 	var mainStorage storage.Storage
 	var dbStorage *storage.DBStorage
+	var periodicSaver *storage.PeriodicSaver
+	var fileManager *storage.FileManager
 	var err error
 
 	if cfg.DatabaseDSN != "" {
@@ -63,7 +68,7 @@ func main() {
 		mainStorage = memStorage
 
 		// Setup file storage
-		fileManager := storage.NewFileManager(cfg.FileStoragePath, memStorage)
+		fileManager = storage.NewFileManager(cfg.FileStoragePath, memStorage)
 
 		// Configure synchronous saving if store interval is 0
 		syncSave := cfg.StoreInterval == 0
@@ -79,26 +84,10 @@ func main() {
 		}
 
 		// Setup periodic saving if not synchronous
-		var periodicSaver *storage.PeriodicSaver
 		if !syncSave {
 			periodicSaver = storage.NewPeriodicSaver(fileManager, memStorage, cfg.StoreInterval)
 			periodicSaver.Start()
 			log.Info().Dur("interval", cfg.StoreInterval).Msg("Started periodic saving")
-
-			// Setup graceful shutdown for periodic saver
-			defer func() {
-				if periodicSaver != nil {
-					periodicSaver.Stop()
-					log.Info().Msg("Stopped periodic saving")
-				}
-
-				// Save final state
-				if err := fileManager.SaveToFile(); err != nil {
-					log.Error().Err(err).Msg("Failed to save final state")
-				} else {
-					log.Info().Str("file", cfg.FileStoragePath).Msg("Final state saved")
-				}
-			}()
 		} else {
 			log.Info().Msg("Synchronous saving enabled")
 		}
@@ -144,6 +133,16 @@ func main() {
 	// Add middleware
 	r.Use(loggingMiddleware)
 
+	// Add decryption middleware if crypto key is configured
+	if cfg.CryptoKey != "" {
+		privateKey, err := loadPrivateKey(cfg.CryptoKey)
+		if err != nil {
+			log.Fatal().Err(err).Msg("Failed to load private key for decryption")
+		}
+		r.Use(gzipmw.DecryptionMiddleware(privateKey))
+		log.Info().Str("key_path", cfg.CryptoKey).Msg("Asymmetric decryption enabled")
+	}
+
 	// Add hash middleware BEFORE gzip middleware so it can verify compressed data
 	if cfg.Key != "" {
 		log.Info().Msg("SHA256 hash verification enabled")
@@ -170,9 +169,9 @@ func main() {
 	addr := strings.TrimPrefix(cfg.ServerAddress, "http://")
 	addr = strings.TrimPrefix(addr, "https://")
 
-	// Setup graceful shutdown
+	// Setup graceful shutdown - handle SIGTERM, SIGINT, SIGQUIT
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
 
 	server := &http.Server{
 		Addr:    addr,
@@ -188,11 +187,36 @@ func main() {
 	}()
 
 	// Wait for shutdown signal
-	<-sigChan
-	log.Info().Msg("Shutdown signal received")
+	sig := <-sigChan
+	log.Info().Msgf("Shutdown signal received: %v", sig)
+
+	// Create context with timeout for graceful shutdown
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Shutdown HTTP server gracefully (waits for in-flight requests to complete)
+	log.Info().Msg("Shutting down HTTP server...")
+	if err := server.Shutdown(ctx); err != nil {
+		log.Error().Err(err).Msg("Server shutdown error")
+	} else {
+		log.Info().Msg("HTTP server stopped gracefully")
+	}
+
+	// Save final state if using file storage with periodic saver
+	if periodicSaver != nil {
+		log.Info().Msg("Stopping periodic saver...")
+		periodicSaver.Stop()
+		log.Info().Msg("Saving final state...")
+		if err := fileManager.SaveToFile(); err != nil {
+			log.Error().Err(err).Msg("Failed to save final state")
+		} else {
+			log.Info().Str("file", cfg.FileStoragePath).Msg("Final state saved")
+		}
+	}
 
 	// Close database connection if using database storage
 	if dbStorage != nil {
+		log.Info().Msg("Closing database connection...")
 		if err := dbStorage.Close(); err != nil {
 			log.Error().Err(err).Msg("Failed to close database connection")
 		} else {
@@ -222,4 +246,12 @@ func loggingMiddleware(next http.Handler) http.Handler {
 			Dur("duration", duration).
 			Msg("handled request")
 	})
+}
+
+func loadPrivateKey(path string) (*rsa.PrivateKey, error) {
+	privateKey, err := crypto.LoadPrivateKeyFromFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load private key from %s: %w", path, err)
+	}
+	return privateKey, nil
 }
