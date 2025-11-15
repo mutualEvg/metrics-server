@@ -245,8 +245,9 @@ func TestNewFileAuditorError(t *testing.T) {
 		t.Error("Expected error for empty file path")
 	}
 
-	// Try to create auditor with non-writable path
-	_, err = NewFileAuditor("/root/impossible_path.json")
+	// Try to create auditor with definitely non-writable path (file inside non-existent directory)
+	// This should fail on all systems because the parent directory doesn't exist
+	_, err = NewFileAuditor("/nonexistent_dir_12345/impossible_path.json")
 	if err == nil {
 		t.Error("Expected error for non-writable path")
 	}
