@@ -94,10 +94,10 @@ func TestFileAuditorMultipleEvents(t *testing.T) {
 		t.Fatalf("Failed to create file auditor: %v", err)
 	}
 
-	// Write multiple events
+	// Write multiple events with incrementing timestamps
 	for i := 0; i < 3; i++ {
 		event := Event{
-			Timestamp: time.Now().Unix(),
+			Timestamp: time.Now().Unix() + int64(i), // Increment timestamp to ensure uniqueness
 			Metrics:   []string{"metric1", "metric2"},
 			IPAddress: "192.168.1.100",
 		}
@@ -105,10 +105,9 @@ func TestFileAuditorMultipleEvents(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to notify file auditor: %v", err)
 		}
-		time.Sleep(10 * time.Millisecond) // Small delay to ensure different timestamps
 	}
 
-	// Verify file has 3 lines
+	// File auditor writes synchronously, so we can verify immediately
 	data, err := os.ReadFile(tempFile)
 	if err != nil {
 		t.Fatalf("Failed to read audit file: %v", err)
@@ -192,10 +191,7 @@ func TestSubjectNotify(t *testing.T) {
 	// Notify all observers
 	subject.Notify(event)
 
-	// Give it a moment to write
-	time.Sleep(50 * time.Millisecond)
-
-	// Verify file was written
+	// File auditor writes synchronously, so verify immediately
 	data, err := os.ReadFile(tempFile)
 	if err != nil {
 		t.Fatalf("Failed to read audit file: %v", err)
@@ -229,10 +225,7 @@ func TestMultipleObservers(t *testing.T) {
 	// Notify all observers
 	subject.Notify(event)
 
-	// Give it a moment to write
-	time.Sleep(50 * time.Millisecond)
-
-	// Verify both files were written
+	// File auditor writes synchronously, so verify immediately
 	data1, err1 := os.ReadFile(tempFile1)
 	data2, err2 := os.ReadFile(tempFile2)
 
@@ -266,4 +259,3 @@ func TestNewRemoteAuditorError(t *testing.T) {
 		t.Error("Expected error for empty URL")
 	}
 }
-

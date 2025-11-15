@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"flag"
 	"log"
 	"os"
@@ -27,130 +28,275 @@ type Config struct {
 	BatchSize      int
 	RateLimit      int
 	Key            string
+	CryptoKey      string // Path to public key file for encryption
 	RetryConfig    retry.RetryConfig
+}
+
+// JSONConfig represents the JSON configuration file structure for agent
+type JSONConfig struct {
+	Address        string `json:"address"`
+	ReportInterval string `json:"report_interval"`
+	PollInterval   string `json:"poll_interval"`
+	CryptoKey      string `json:"crypto_key"`
+}
+
+// agentFlags holds all command-line flag values for the agent
+type agentFlags struct {
+	address        *string
+	reportInterval *int
+	pollInterval   *int
+	batchSize      *int
+	disableRetry   *bool
+	key            *string
+	cryptoKey      *string
+	rateLimit      *int
+	configPath     *string
+	configPathLong *string
 }
 
 // ParseConfig parses command line flags and environment variables
 func ParseConfig() *Config {
-	// Read flags
-	flagAddress := flag.String("a", "", "HTTP server address (default: http://localhost:8080)")
-	flagReport := flag.Int("r", 0, "Report interval in seconds (default: 10)")
-	flagPoll := flag.Int("p", 0, "Poll interval in seconds (default: 2)")
-	flagBatchSize := flag.Int("b", 0, "Batch size for metrics (default: 10, 0 = disable batching)")
-	flagDisableRetry := flag.Bool("disable-retry", false, "Disable retry logic for testing")
-	flagKey := flag.String("k", "", "Key for SHA256 signature")
-	flagRateLimit := flag.Int("l", 0, "Rate limit for concurrent requests (default: 10)")
-	flag.Parse()
+	flags := parseAgentFlags()
+	validateAgentFlags()
+	jsonConfig := loadAgentJSONConfig(resolveAgentConfigPath(flags))
 
+	config := &Config{
+		ServerAddress:  resolveAgentServerAddress(flags, jsonConfig),
+		PollInterval:   resolveAgentPollInterval(flags, jsonConfig),
+		ReportInterval: resolveAgentReportInterval(flags, jsonConfig),
+		BatchSize:      resolveAgentBatchSize(flags),
+		RateLimit:      resolveAgentRateLimit(flags),
+		Key:            resolveAgentKey(flags),
+		CryptoKey:      resolveAgentCryptoKey(flags, jsonConfig),
+		RetryConfig:    resolveAgentRetryConfig(flags),
+	}
+
+	logAgentConfig(config)
+	return config
+}
+
+// parseAgentFlags parses all command-line flags
+func parseAgentFlags() *agentFlags {
+	flags := &agentFlags{
+		address:        flag.String("a", "", "HTTP server address (default: http://localhost:8080)"),
+		reportInterval: flag.Int("r", 0, "Report interval in seconds (default: 10)"),
+		pollInterval:   flag.Int("p", 0, "Poll interval in seconds (default: 2)"),
+		batchSize:      flag.Int("b", 0, "Batch size for metrics (default: 10, 0 = disable batching)"),
+		disableRetry:   flag.Bool("disable-retry", false, "Disable retry logic for testing"),
+		key:            flag.String("k", "", "Key for SHA256 signature"),
+		cryptoKey:      flag.String("crypto-key", "", "Path to public key file for encryption"),
+		rateLimit:      flag.Int("l", 0, "Rate limit for concurrent requests (default: 10)"),
+		configPath:     flag.String("c", "", "Path to JSON configuration file"),
+		configPathLong: flag.String("config", "", "Path to JSON configuration file"),
+	}
+	flag.Parse()
+	return flags
+}
+
+// validateAgentFlags validates that no unknown flags are provided
+func validateAgentFlags() {
 	if len(flag.Args()) > 0 {
 		log.Fatalf("Unknown flags: %v", flag.Args())
 	}
+}
 
-	config := &Config{}
+// resolveAgentConfigPath resolves the path to the JSON config file
+func resolveAgentConfigPath(flags *agentFlags) string {
+	if *flags.configPath != "" {
+		return *flags.configPath
+	}
+	if *flags.configPathLong != "" {
+		return *flags.configPathLong
+	}
+	return os.Getenv("CONFIG")
+}
 
-	// --- Address
+// loadAgentJSONConfig loads the agent JSON config file
+func loadAgentJSONConfig(path string) *JSONConfig {
+	if path == "" {
+		return nil
+	}
+
+	config, err := loadJSONConfig(path)
+	if err != nil {
+		log.Printf("Warning: Failed to load config file %s: %v", path, err)
+		return nil
+	}
+
+	log.Printf("Loaded configuration from %s", path)
+	return config
+}
+
+// loadJSONConfig reads and parses the JSON config file
+func loadJSONConfig(path string) (*JSONConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var config JSONConfig
+	if err := json.Unmarshal(data, &config); err != nil {
+		return nil, err
+	}
+
+	return &config, nil
+}
+
+// resolveAgentServerAddress resolves the server address
+func resolveAgentServerAddress(flags *agentFlags, jsonConfig *JSONConfig) string {
 	address := os.Getenv("ADDRESS")
 	if address == "" {
-		if *flagAddress != "" {
-			address = *flagAddress
+		if *flags.address != "" {
+			address = *flags.address
+		} else if jsonConfig != nil && jsonConfig.Address != "" {
+			address = jsonConfig.Address
 		} else {
 			address = DefaultServerAddress
 		}
 	}
-	config.ServerAddress = address
 
-	if !strings.HasPrefix(config.ServerAddress, "http://") && !strings.HasPrefix(config.ServerAddress, "https://") {
-		config.ServerAddress = "http://" + config.ServerAddress
+	// Ensure address has http:// or https:// prefix
+	if !strings.HasPrefix(address, "http://") && !strings.HasPrefix(address, "https://") {
+		address = "http://" + address
 	}
 
-	// --- Key
-	keyEnv := os.Getenv("KEY")
-	if keyEnv != "" {
-		config.Key = keyEnv
-	} else if *flagKey != "" {
-		config.Key = *flagKey
-	}
+	return address
+}
 
-	if config.Key != "" {
+// resolveAgentKey resolves the signature key
+func resolveAgentKey(flags *agentFlags) string {
+	if key := os.Getenv("KEY"); key != "" {
 		log.Printf("SHA256 signature enabled")
+		return key
 	}
+	if *flags.key != "" {
+		log.Printf("SHA256 signature enabled")
+		return *flags.key
+	}
+	return ""
+}
 
-	// --- Rate Limit
-	rateLimitEnv := os.Getenv("RATE_LIMIT")
-	if rateLimitEnv != "" {
+// resolveAgentCryptoKey resolves the crypto key path
+func resolveAgentCryptoKey(flags *agentFlags, jsonConfig *JSONConfig) string {
+	if cryptoKey := os.Getenv("CRYPTO_KEY"); cryptoKey != "" {
+		log.Printf("Asymmetric encryption enabled with public key: %s", cryptoKey)
+		return cryptoKey
+	}
+	if *flags.cryptoKey != "" {
+		log.Printf("Asymmetric encryption enabled with public key: %s", *flags.cryptoKey)
+		return *flags.cryptoKey
+	}
+	if jsonConfig != nil && jsonConfig.CryptoKey != "" {
+		log.Printf("Asymmetric encryption enabled with public key: %s", jsonConfig.CryptoKey)
+		return jsonConfig.CryptoKey
+	}
+	return ""
+}
+
+// resolveAgentRateLimit resolves the rate limit
+func resolveAgentRateLimit(flags *agentFlags) int {
+	if rateLimitEnv := os.Getenv("RATE_LIMIT"); rateLimitEnv != "" {
 		val, err := strconv.Atoi(rateLimitEnv)
 		if err != nil {
 			log.Fatalf("Invalid RATE_LIMIT: %v", err)
 		}
-		config.RateLimit = val
-	} else if *flagRateLimit != 0 {
-		config.RateLimit = *flagRateLimit
-	} else {
-		config.RateLimit = DefaultRateLimit
+		return val
 	}
+	if *flags.rateLimit != 0 {
+		return *flags.rateLimit
+	}
+	return DefaultRateLimit
+}
 
-	// --- Report Interval
-	reportEnv := os.Getenv("REPORT_INTERVAL")
-	var reportSeconds int
-	if reportEnv != "" {
+// resolveAgentReportInterval resolves the report interval
+func resolveAgentReportInterval(flags *agentFlags, jsonConfig *JSONConfig) time.Duration {
+	if reportEnv := os.Getenv("REPORT_INTERVAL"); reportEnv != "" {
 		val, err := strconv.Atoi(reportEnv)
 		if err != nil {
 			log.Fatalf("Invalid REPORT_INTERVAL: %v", err)
 		}
-		reportSeconds = val
-	} else if *flagReport != 0 {
-		reportSeconds = *flagReport
-	} else {
-		reportSeconds = DefaultReportInterval
+		return time.Duration(val) * time.Second
 	}
-	config.ReportInterval = time.Duration(reportSeconds) * time.Second
+	if *flags.reportInterval != 0 {
+		return time.Duration(*flags.reportInterval) * time.Second
+	}
+	if jsonConfig != nil && jsonConfig.ReportInterval != "" {
+		return parseAgentIntervalFromJSON("report_interval", jsonConfig.ReportInterval)
+	}
+	return time.Duration(DefaultReportInterval) * time.Second
+}
 
-	// --- Poll Interval
-	pollEnv := os.Getenv("POLL_INTERVAL")
-	var pollSeconds int
-	if pollEnv != "" {
+// resolveAgentPollInterval resolves the poll interval
+func resolveAgentPollInterval(flags *agentFlags, jsonConfig *JSONConfig) time.Duration {
+	if pollEnv := os.Getenv("POLL_INTERVAL"); pollEnv != "" {
 		val, err := strconv.Atoi(pollEnv)
 		if err != nil {
 			log.Fatalf("Invalid POLL_INTERVAL: %v", err)
 		}
-		pollSeconds = val
-	} else if *flagPoll != 0 {
-		pollSeconds = *flagPoll
-	} else {
-		pollSeconds = DefaultPollInterval
+		return time.Duration(val) * time.Second
 	}
-	config.PollInterval = time.Duration(pollSeconds) * time.Second
+	if *flags.pollInterval != 0 {
+		return time.Duration(*flags.pollInterval) * time.Second
+	}
+	if jsonConfig != nil && jsonConfig.PollInterval != "" {
+		return parseAgentIntervalFromJSON("poll_interval", jsonConfig.PollInterval)
+	}
+	return time.Duration(DefaultPollInterval) * time.Second
+}
 
-	// --- Batch Size
-	batchEnv := os.Getenv("BATCH_SIZE")
-	if batchEnv != "" {
+// parseAgentIntervalFromJSON parses a time interval from JSON string
+func parseAgentIntervalFromJSON(name, interval string) time.Duration {
+	duration, err := time.ParseDuration(interval)
+	if err != nil {
+		log.Fatalf("Invalid %s in config file: %v", name, err)
+	}
+	return duration
+}
+
+// resolveAgentBatchSize resolves the batch size
+func resolveAgentBatchSize(flags *agentFlags) int {
+	if batchEnv := os.Getenv("BATCH_SIZE"); batchEnv != "" {
 		val, err := strconv.Atoi(batchEnv)
 		if err != nil {
 			log.Fatalf("Invalid BATCH_SIZE: %v", err)
 		}
-		config.BatchSize = val
-	} else if *flagBatchSize != 0 {
-		config.BatchSize = *flagBatchSize
-	} else {
-		config.BatchSize = DefaultBatchSize
+		return val
+	}
+	if *flags.batchSize != 0 {
+		return *flags.batchSize
+	}
+	return DefaultBatchSize
+}
+
+// resolveAgentRetryConfig resolves the retry configuration
+func resolveAgentRetryConfig(flags *agentFlags) retry.RetryConfig {
+	// Check for disabled retry first
+	if *flags.disableRetry || os.Getenv("DISABLE_RETRY") == "true" {
+		return retry.NoRetryConfig()
 	}
 
-	// --- Retry Configuration
+	// Test mode with minimal retry
+	if os.Getenv("TEST_MODE") == "true" {
+		config := retry.FastConfig()
+		config.MaxAttempts = 1
+		config.Intervals = []time.Duration{}
+		return config
+	}
+
+	// Full retry or fast config
 	if os.Getenv("ENABLE_FULL_RETRY") == "true" {
-		config.RetryConfig = retry.DefaultConfig()
-	} else {
-		config.RetryConfig = retry.FastConfig()
+		return retry.DefaultConfig()
 	}
 
-	if *flagDisableRetry || os.Getenv("DISABLE_RETRY") == "true" {
-		config.RetryConfig = retry.NoRetryConfig()
-	} else if os.Getenv("TEST_MODE") == "true" {
-		config.RetryConfig.MaxAttempts = 1
-		config.RetryConfig.Intervals = []time.Duration{}
+	return retry.FastConfig()
+}
+
+// logAgentConfig logs the final configuration
+func logAgentConfig(config *Config) {
+	cryptoStatus := "disabled"
+	if config.CryptoKey != "" {
+		cryptoStatus = "enabled"
 	}
-
-	log.Printf("Agent starting with server=%s, poll=%v, report=%v, batch_size=%d, rate_limit=%d",
-		config.ServerAddress, config.PollInterval, config.ReportInterval, config.BatchSize, config.RateLimit)
-
-	return config
+	log.Printf("Agent starting with server=%s, poll=%v, report=%v, batch_size=%d, rate_limit=%d, crypto=%s",
+		config.ServerAddress, config.PollInterval, config.ReportInterval, config.BatchSize, config.RateLimit, cryptoStatus)
 }

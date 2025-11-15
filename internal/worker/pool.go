@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mutualEvg/metrics-server/internal/crypto"
 	"github.com/mutualEvg/metrics-server/internal/hash"
 	"github.com/mutualEvg/metrics-server/internal/models"
 	"github.com/mutualEvg/metrics-server/internal/retry"
@@ -29,7 +31,8 @@ type Pool struct {
 	rateLimit   int
 	httpClient  *http.Client
 	serverAddr  string
-	key         string // Key for SHA256 signature
+	key         string         // Key for SHA256 signature
+	publicKey   *rsa.PublicKey // Public key for encryption
 	retryConfig retry.RetryConfig
 }
 
@@ -41,7 +44,16 @@ func NewPool(rateLimit int, serverAddr, key string, retryConfig retry.RetryConfi
 		httpClient:  &http.Client{Timeout: 10 * time.Second},
 		serverAddr:  serverAddr,
 		key:         key,
+		publicKey:   nil,
 		retryConfig: retryConfig,
+	}
+}
+
+// SetPublicKey sets the public key for encryption
+func (p *Pool) SetPublicKey(publicKey *rsa.PublicKey) {
+	p.publicKey = publicKey
+	if publicKey != nil {
+		log.Printf("Public key configured for encryption")
 	}
 }
 
@@ -113,8 +125,20 @@ func (p *Pool) sendMetric(metricData MetricData) {
 			return fmt.Errorf("failed to close gzip writer: %w", err)
 		}
 
+		// Prepare body data (may be encrypted)
+		bodyData := compressedData.Bytes()
+
+		// Encrypt if public key is configured
+		if p.publicKey != nil {
+			encryptedData, err := crypto.EncryptRSAChunked(bodyData, p.publicKey)
+			if err != nil {
+				return fmt.Errorf("failed to encrypt data: %w", err)
+			}
+			bodyData = encryptedData
+		}
+
 		url := fmt.Sprintf("%s/update/", p.serverAddr)
-		req, err := http.NewRequest(http.MethodPost, url, &compressedData)
+		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyData))
 		if err != nil {
 			return fmt.Errorf("failed to create request: %w", err)
 		}
@@ -123,7 +147,12 @@ func (p *Pool) sendMetric(metricData MetricData) {
 		req.Header.Set("Content-Encoding", "gzip")
 		req.Header.Set("Accept-Encoding", "gzip")
 
-		// Add hash header if key is configured
+		// Add encryption header if data is encrypted
+		if p.publicKey != nil {
+			req.Header.Set("X-Encrypted", "true")
+		}
+
+		// Add hash header if key is configured (hash is computed before encryption)
 		if p.key != "" {
 			hashValue := hash.CalculateHash(compressedData.Bytes(), p.key)
 			req.Header.Set("HashSHA256", hashValue)
