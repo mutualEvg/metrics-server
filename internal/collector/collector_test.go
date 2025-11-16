@@ -96,6 +96,9 @@ func TestCollectorStart(t *testing.T) {
 		case <-ticker.C:
 			if atomic.LoadInt64(&pollCount) > 0 {
 				// Success - poll count increased
+				// Wait for context to expire and collector goroutines to finish
+				<-ctx.Done()
+				time.Sleep(100 * time.Millisecond)
 				return
 			}
 		case <-timeout:
