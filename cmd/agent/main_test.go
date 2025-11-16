@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -175,6 +176,7 @@ collectionLoop:
 
 func TestWorkerPool(t *testing.T) {
 	// Create test server
+	var mu sync.Mutex
 	receivedMetrics := make([]models.Metrics, 0)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -215,7 +217,9 @@ func TestWorkerPool(t *testing.T) {
 			return
 		}
 
+		mu.Lock()
 		receivedMetrics = append(receivedMetrics, metric)
+		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -257,14 +261,20 @@ func TestWorkerPool(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Verify metrics were received
-	if len(receivedMetrics) != 2 {
-		t.Errorf("Expected 2 metrics, received %d", len(receivedMetrics))
+	mu.Lock()
+	count := len(receivedMetrics)
+	metricsCopy := make([]models.Metrics, len(receivedMetrics))
+	copy(metricsCopy, receivedMetrics)
+	mu.Unlock()
+
+	if count != 2 {
+		t.Errorf("Expected 2 metrics, received %d", count)
 	}
 
 	// Check individual metrics
 	foundGauge := false
 	foundCounter := false
-	for _, metric := range receivedMetrics {
+	for _, metric := range metricsCopy {
 		if metric.ID == "TestGauge" && metric.MType == "gauge" && metric.Value != nil && *metric.Value == testValue {
 			foundGauge = true
 		}

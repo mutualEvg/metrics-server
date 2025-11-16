@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -41,6 +42,7 @@ func TestEncryptedCommunication(t *testing.T) {
 	}
 
 	// Track received metrics
+	var mu sync.Mutex
 	receivedMetrics := make([]models.Metrics, 0)
 
 	// Create test server with decryption middleware
@@ -63,7 +65,9 @@ func TestEncryptedCommunication(t *testing.T) {
 						return
 					}
 
+					mu.Lock()
 					receivedMetrics = append(receivedMetrics, metric)
+					mu.Unlock()
 					w.WriteHeader(http.StatusOK)
 					json.NewEncoder(w).Encode(metric)
 				}),
@@ -74,7 +78,9 @@ func TestEncryptedCommunication(t *testing.T) {
 
 	// Test single metric sending with encryption
 	t.Run("single metric with encryption", func(t *testing.T) {
+		mu.Lock()
 		receivedMetrics = receivedMetrics[:0] // Clear
+		mu.Unlock()
 
 		retryConfig := retry.RetryConfig{
 			MaxAttempts: 1,
@@ -106,16 +112,24 @@ func TestEncryptedCommunication(t *testing.T) {
 		// Wait for processing
 		time.Sleep(100 * time.Millisecond)
 
-		if len(receivedMetrics) != 1 {
-			t.Errorf("Expected 1 metric, got %d", len(receivedMetrics))
+		mu.Lock()
+		count := len(receivedMetrics)
+		var firstMetric models.Metrics
+		if count > 0 {
+			firstMetric = receivedMetrics[0]
+		}
+		mu.Unlock()
+
+		if count != 1 {
+			t.Errorf("Expected 1 metric, got %d", count)
 		}
 
-		if len(receivedMetrics) > 0 {
-			if receivedMetrics[0].ID != "TestMetric" {
-				t.Errorf("Expected metric ID 'TestMetric', got '%s'", receivedMetrics[0].ID)
+		if count > 0 {
+			if firstMetric.ID != "TestMetric" {
+				t.Errorf("Expected metric ID 'TestMetric', got '%s'", firstMetric.ID)
 			}
-			if receivedMetrics[0].Value == nil || *receivedMetrics[0].Value != 123.45 {
-				t.Errorf("Expected metric value 123.45, got %v", receivedMetrics[0].Value)
+			if firstMetric.Value == nil || *firstMetric.Value != 123.45 {
+				t.Errorf("Expected metric value 123.45, got %v", firstMetric.Value)
 			}
 		}
 	})
@@ -243,6 +257,7 @@ func TestUnencryptedCommunicationWithEncryptionEnabled(t *testing.T) {
 	}
 
 	// Track received metrics
+	var mu sync.Mutex
 	receivedMetrics := make([]models.Metrics, 0)
 
 	// Create test server with decryption middleware (but send unencrypted data)
@@ -262,7 +277,9 @@ func TestUnencryptedCommunicationWithEncryptionEnabled(t *testing.T) {
 						return
 					}
 
+					mu.Lock()
 					receivedMetrics = append(receivedMetrics, metric)
+					mu.Unlock()
 					w.WriteHeader(http.StatusOK)
 					json.NewEncoder(w).Encode(metric)
 				}),
@@ -296,13 +313,21 @@ func TestUnencryptedCommunicationWithEncryptionEnabled(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Verify metric was received
-	if len(receivedMetrics) != 1 {
-		t.Errorf("Expected 1 metric, got %d", len(receivedMetrics))
+	mu.Lock()
+	count := len(receivedMetrics)
+	var firstMetric models.Metrics
+	if count > 0 {
+		firstMetric = receivedMetrics[0]
+	}
+	mu.Unlock()
+
+	if count != 1 {
+		t.Errorf("Expected 1 metric, got %d", count)
 	}
 
-	if len(receivedMetrics) > 0 {
-		if receivedMetrics[0].ID != "UnencryptedMetric" {
-			t.Errorf("Expected metric ID 'UnencryptedMetric', got '%s'", receivedMetrics[0].ID)
+	if count > 0 {
+		if firstMetric.ID != "UnencryptedMetric" {
+			t.Errorf("Expected metric ID 'UnencryptedMetric', got '%s'", firstMetric.ID)
 		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"os"
 	"runtime"
+	"sync/atomic"
 	"time"
 
 	"github.com/shirou/gopsutil/v3/cpu"
@@ -184,8 +185,8 @@ func (c *Collector) collectRuntimeMetrics(ctx context.Context) {
 				log.Printf("Runtime channel full, dropping RandomValue metric")
 			}
 
-			// Increment poll count
-			*c.pollCount++
+		// Increment poll count
+		atomic.AddInt64(c.pollCount, 1)
 		}
 	}
 }
