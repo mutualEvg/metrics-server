@@ -16,7 +16,7 @@ const (
 	DefaultServerAddress  = "http://localhost:8080"
 	DefaultPollInterval   = 2
 	DefaultReportInterval = 10
-	DefaultBatchSize      = 0  // Default to individual sending for backward compatibility
+	DefaultBatchSize      = 10 // Default batch size for metrics
 	DefaultRateLimit      = 10 // Default rate limit for concurrent requests
 )
 
