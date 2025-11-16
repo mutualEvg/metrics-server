@@ -31,8 +31,8 @@ func TestNewPool(t *testing.T) {
 		t.Errorf("Expected key test-key, got %s", pool.key)
 	}
 
-	if cap(pool.jobs) != 10 { // rateLimit * 2
-		t.Errorf("Expected jobs channel capacity 10, got %d", cap(pool.jobs))
+	if cap(pool.jobs) != 50 { // rateLimit * 10
+		t.Errorf("Expected jobs channel capacity 50, got %d", cap(pool.jobs))
 	}
 
 	if pool.httpClient.Timeout != 10*time.Second {
