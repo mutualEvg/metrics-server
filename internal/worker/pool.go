@@ -39,7 +39,7 @@ type Pool struct {
 // NewPool creates a new worker pool
 func NewPool(rateLimit int, serverAddr, key string, retryConfig retry.RetryConfig) *Pool {
 	return &Pool{
-		jobs:        make(chan MetricData, rateLimit*2), // Buffer to prevent blocking
+		jobs:        make(chan MetricData, rateLimit*10), // Buffer to handle burst metrics
 		rateLimit:   rateLimit,
 		httpClient:  &http.Client{Timeout: 10 * time.Second},
 		serverAddr:  serverAddr,
