@@ -7,6 +7,7 @@ import (
 	"crypto/rsa"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -68,6 +69,20 @@ func (b *Batch) GetAndClear() []models.Metrics {
 	return result
 }
 
+// getOutboundIP gets the preferred outbound IP address of this machine
+func getOutboundIP() string {
+	// Try to get the outbound IP by connecting to a public DNS server
+	// This doesn't actually send any data, just establishes which interface would be used
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		return "127.0.0.1" // Fallback to localhost
+	}
+	defer conn.Close()
+
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+	return localAddr.IP.String()
+}
+
 // Send sends a batch of metrics using the /updates/ endpoint
 func Send(metrics []models.Metrics, serverAddr, key string, retryConfig retry.RetryConfig) error {
 	return SendWithEncryption(metrics, serverAddr, key, nil, retryConfig)
@@ -120,6 +135,9 @@ func SendWithEncryption(metrics []models.Metrics, serverAddr, key string, public
 
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Content-Encoding", "gzip")
+
+		// Add X-Real-IP header with the agent's IP address
+		req.Header.Set("X-Real-IP", getOutboundIP())
 
 		// Add encryption header if data is encrypted
 		if publicKey != nil {
