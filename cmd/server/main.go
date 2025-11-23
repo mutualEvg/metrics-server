@@ -133,6 +133,14 @@ func main() {
 	// Add middleware
 	r.Use(loggingMiddleware)
 
+	// Add trusted subnet middleware if configured
+	if cfg.TrustedSubnet != "" {
+		r.Use(gzipmw.TrustedSubnetMiddleware(cfg.TrustedSubnet))
+		log.Info().Str("trusted_subnet", cfg.TrustedSubnet).Msg("Trusted subnet validation enabled")
+	} else {
+		log.Info().Msg("Trusted subnet validation disabled (all IPs allowed)")
+	}
+
 	// Add decryption middleware if crypto key is configured
 	if cfg.CryptoKey != "" {
 		privateKey, err := loadPrivateKey(cfg.CryptoKey)
