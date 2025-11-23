@@ -24,6 +24,7 @@ type Config struct {
 	AuditFile       string // Path to audit log file (optional)
 	AuditURL        string // URL for remote audit server (optional)
 	TrustedSubnet   string // Trusted subnet in CIDR notation (optional)
+	GRPCAddress     string // gRPC server address (optional)
 }
 
 // JSONConfig represents the JSON configuration file structure for server
@@ -35,6 +36,7 @@ type JSONConfig struct {
 	DatabaseDSN   string `json:"database_dsn"`
 	CryptoKey     string `json:"crypto_key"`
 	TrustedSubnet string `json:"trusted_subnet"`
+	GRPCAddress   string `json:"grpc_address"`
 }
 
 // configFlags holds all command-line flag values
@@ -50,6 +52,7 @@ type configFlags struct {
 	auditFile       *string
 	auditURL        *string
 	trustedSubnet   *string
+	grpcAddress     *string
 	configPath      *string
 	configPathLong  *string
 }
@@ -83,6 +86,7 @@ func Load() *Config {
 		AuditFile:       resolveAuditFile(flags),
 		AuditURL:        resolveAuditURL(flags),
 		TrustedSubnet:   resolveTrustedSubnet(flags, jsonConfig),
+		GRPCAddress:     resolveGRPCAddress(flags, jsonConfig),
 	}
 }
 
@@ -100,6 +104,7 @@ func parseFlags() *configFlags {
 		auditFile:       flag.String("audit-file", "", "Path to audit log file"),
 		auditURL:        flag.String("audit-url", "", "URL for remote audit server"),
 		trustedSubnet:   flag.String("t", "", "Trusted subnet in CIDR notation"),
+		grpcAddress:     flag.String("g", "", "gRPC server address"),
 		configPath:      flag.String("c", "", "Path to JSON configuration file"),
 		configPathLong:  flag.String("config", "", "Path to JSON configuration file"),
 	}
@@ -242,6 +247,16 @@ func resolveTrustedSubnet(flags *configFlags, jsonConfig *JSONConfig) string {
 	return resolveStringWithJSON("TRUSTED_SUBNET", *flags.trustedSubnet, func() string {
 		if jsonConfig != nil {
 			return jsonConfig.TrustedSubnet
+		}
+		return ""
+	}, "")
+}
+
+// resolveGRPCAddress resolves the gRPC server address
+func resolveGRPCAddress(flags *configFlags, jsonConfig *JSONConfig) string {
+	return resolveStringWithJSON("GRPC_ADDRESS", *flags.grpcAddress, func() string {
+		if jsonConfig != nil {
+			return jsonConfig.GRPCAddress
 		}
 		return ""
 	}, "")
