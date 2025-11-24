@@ -52,7 +52,7 @@ func TestGRPCUpdateMetrics(t *testing.T) {
 	defer s.Stop()
 
 	ctx := context.Background()
-	conn, err := grpc.Dial("bufnet", // nolint:SA1019 // Dial required for bufconn testing
+	conn, err := grpc.NewClient("passthrough:///bufnet",
 		grpc.WithContextDialer(bufDialer(lis)),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
@@ -121,7 +121,7 @@ func TestGRPCBatchUpdate(t *testing.T) {
 	defer s.Stop()
 
 	ctx := context.Background()
-	conn, err := grpc.Dial("bufnet", // nolint:SA1019 // Dial required for bufconn testing
+	conn, err := grpc.NewClient("passthrough:///bufnet",
 		grpc.WithContextDialer(bufDialer(lis)),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
@@ -252,8 +252,7 @@ func TestGRPCTrustedSubnetInterceptor(t *testing.T) {
 			defer s.Stop()
 
 			ctx := context.Background()
-			//nolint:staticcheck // Using Dial for bufconn test compatibility
-			conn, err := grpc.Dial("bufnet",
+			conn, err := grpc.NewClient("passthrough:///bufnet",
 				grpc.WithContextDialer(bufDialer(lis)),
 				grpc.WithTransportCredentials(insecure.NewCredentials()),
 			)
@@ -310,7 +309,7 @@ func TestGRPCInvalidMetricType(t *testing.T) {
 	defer s.Stop()
 
 	ctx := context.Background()
-	conn, err := grpc.Dial("bufnet", // nolint:SA1019 // Dial required for bufconn testing
+	conn, err := grpc.NewClient("passthrough:///bufnet",
 		grpc.WithContextDialer(bufDialer(lis)),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)

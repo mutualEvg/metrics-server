@@ -24,12 +24,11 @@ type MetricsClient struct {
 
 // NewMetricsClient creates a new gRPC metrics client
 func NewMetricsClient(address string) (*MetricsClient, error) {
-	conn, err := grpc.Dial(address, // nolint:SA1019 // Dial required for blocking connection
+	conn, err := grpc.NewClient(address,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(), // nolint:SA1019 // WithBlock required for reliable connection
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to gRPC server: %w", err)
+		return nil, fmt.Errorf("failed to create gRPC client: %w", err)
 	}
 
 	client := pb.NewMetricsClient(conn)
