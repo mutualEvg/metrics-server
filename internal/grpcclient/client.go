@@ -24,11 +24,8 @@ type MetricsClient struct {
 
 // NewMetricsClient creates a new gRPC metrics client
 func NewMetricsClient(address string) (*MetricsClient, error) {
-	// Create connection with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	conn, err := grpc.DialContext(ctx, address,
+	//nolint:staticcheck // Using Dial with block for reliable connection
+	conn, err := grpc.Dial(address,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithBlock(),
 	)
