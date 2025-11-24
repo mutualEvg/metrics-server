@@ -12,7 +12,7 @@ import (
 	"google.golang.org/grpc/metadata"
 
 	"github.com/mutualEvg/metrics-server/internal/models"
-	
+	pb "github.com/mutualEvg/metrics-server/internal/proto"
 )
 
 // MetricsClient wraps the gRPC client for sending metrics

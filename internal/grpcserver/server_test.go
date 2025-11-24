@@ -52,7 +52,7 @@ func TestGRPCUpdateMetrics(t *testing.T) {
 	defer s.Stop()
 
 	ctx := context.Background()
-	conn, err := grpc.DialContext(ctx, "bufnet",
+	conn, err := grpc.Dial("bufnet",
 		grpc.WithContextDialer(bufDialer(lis)),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
@@ -121,7 +121,7 @@ func TestGRPCBatchUpdate(t *testing.T) {
 	defer s.Stop()
 
 	ctx := context.Background()
-	conn, err := grpc.DialContext(ctx, "bufnet",
+	conn, err := grpc.Dial("bufnet",
 		grpc.WithContextDialer(bufDialer(lis)),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
@@ -309,7 +309,7 @@ func TestGRPCInvalidMetricType(t *testing.T) {
 	defer s.Stop()
 
 	ctx := context.Background()
-	conn, err := grpc.DialContext(ctx, "bufnet",
+	conn, err := grpc.Dial("bufnet",
 		grpc.WithContextDialer(bufDialer(lis)),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
