@@ -52,13 +52,12 @@ func TestGRPCUpdateMetrics(t *testing.T) {
 	defer s.Stop()
 
 	ctx := context.Background()
-	//nolint:staticcheck // Using Dial for bufconn test compatibility
-	conn, err := grpc.Dial("bufnet",
+	conn, err := grpc.Dial("bufnet", // nolint:SA1019 // Dial required for bufconn testing
 		grpc.WithContextDialer(bufDialer(lis)),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
-		t.Fatalf("Failed to dial bufnet: %v", err)
+		t.Fatalf("Failed to create client: %v", err)
 	}
 	defer conn.Close()
 
@@ -122,13 +121,12 @@ func TestGRPCBatchUpdate(t *testing.T) {
 	defer s.Stop()
 
 	ctx := context.Background()
-	//nolint:staticcheck // Using Dial for bufconn test compatibility
-	conn, err := grpc.Dial("bufnet",
+	conn, err := grpc.Dial("bufnet", // nolint:SA1019 // Dial required for bufconn testing
 		grpc.WithContextDialer(bufDialer(lis)),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
-		t.Fatalf("Failed to dial bufnet: %v", err)
+		t.Fatalf("Failed to create client: %v", err)
 	}
 	defer conn.Close()
 
@@ -312,13 +310,12 @@ func TestGRPCInvalidMetricType(t *testing.T) {
 	defer s.Stop()
 
 	ctx := context.Background()
-	//nolint:staticcheck // Using Dial for bufconn test compatibility
-	conn, err := grpc.Dial("bufnet",
+	conn, err := grpc.Dial("bufnet", // nolint:SA1019 // Dial required for bufconn testing
 		grpc.WithContextDialer(bufDialer(lis)),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
-		t.Fatalf("Failed to dial bufnet: %v", err)
+		t.Fatalf("Failed to create client: %v", err)
 	}
 	defer conn.Close()
 
