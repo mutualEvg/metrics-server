@@ -7,7 +7,6 @@ import (
 	"crypto/rsa"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -16,6 +15,7 @@ import (
 	"github.com/mutualEvg/metrics-server/internal/hash"
 	"github.com/mutualEvg/metrics-server/internal/models"
 	"github.com/mutualEvg/metrics-server/internal/retry"
+	"github.com/mutualEvg/metrics-server/internal/utils"
 )
 
 // Batch holds a collection of metrics to send as batch
@@ -67,20 +67,6 @@ func (b *Batch) GetAndClear() []models.Metrics {
 	result := b.metrics
 	b.metrics = make([]models.Metrics, 0, cap(b.metrics)) // Reuse capacity
 	return result
-}
-
-// getOutboundIP gets the preferred outbound IP address of this machine
-func getOutboundIP() string {
-	// Try to get the outbound IP by connecting to a public DNS server
-	// This doesn't actually send any data, just establishes which interface would be used
-	conn, err := net.Dial("udp", "8.8.8.8:80")
-	if err != nil {
-		return "127.0.0.1" // Fallback to localhost
-	}
-	defer conn.Close()
-
-	localAddr := conn.LocalAddr().(*net.UDPAddr)
-	return localAddr.IP.String()
 }
 
 // Send sends a batch of metrics using the /updates/ endpoint
@@ -137,7 +123,7 @@ func SendWithEncryption(metrics []models.Metrics, serverAddr, key string, public
 		req.Header.Set("Content-Encoding", "gzip")
 
 		// Add X-Real-IP header with the agent's IP address
-		req.Header.Set("X-Real-IP", getOutboundIP())
+		req.Header.Set("X-Real-IP", utils.GetOutboundIP())
 
 		// Add encryption header if data is encrypted
 		if publicKey != nil {

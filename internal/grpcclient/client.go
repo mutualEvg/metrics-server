@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net"
 	"time"
 
 	"google.golang.org/grpc"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/mutualEvg/metrics-server/internal/models"
 	pb "github.com/mutualEvg/metrics-server/internal/proto"
+	"github.com/mutualEvg/metrics-server/internal/utils"
 )
 
 // MetricsClient wraps the gRPC client for sending metrics
@@ -34,7 +34,7 @@ func NewMetricsClient(address string) (*MetricsClient, error) {
 	client := pb.NewMetricsClient(conn)
 
 	// Get outbound IP for x-real-ip metadata
-	realIP := getOutboundIP()
+	realIP := utils.GetOutboundIP()
 	log.Printf("gRPC client initialized with IP: %s", realIP)
 
 	return &MetricsClient{
@@ -101,18 +101,4 @@ func (c *MetricsClient) SendMetrics(ctx context.Context, metrics []models.Metric
 
 	log.Printf("Successfully sent %d metrics via gRPC", len(pbMetrics))
 	return nil
-}
-
-// getOutboundIP gets the preferred outbound IP address of this machine
-func getOutboundIP() string {
-	// Try to get the outbound IP by connecting to a public DNS server
-	// This doesn't actually send any data, just establishes which interface would be used
-	conn, err := net.Dial("udp", "8.8.8.8:80")
-	if err != nil {
-		return "127.0.0.1" // Fallback to localhost
-	}
-	defer conn.Close()
-
-	localAddr := conn.LocalAddr().(*net.UDPAddr)
-	return localAddr.IP.String()
 }

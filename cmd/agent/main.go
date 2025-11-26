@@ -161,158 +161,146 @@ func collectAndSendGRPC(ctx context.Context, grpcClient *grpcclient.MetricsClien
 	var metrics []models.Metrics
 	var pollCounter int64
 
-	// List of runtime metrics to collect
-	runtimeMetrics := []string{
-		"Alloc", "BuckHashSys", "Frees", "GCCPUFraction", "GCSys", "HeapAlloc",
-		"HeapIdle", "HeapInuse", "HeapObjects", "HeapReleased", "HeapSys",
-		"LastGC", "Lookups", "MCacheInuse", "MCacheSys", "MSpanInuse", "MSpanSys",
-		"Mallocs", "NextGC", "NumForcedGC", "NumGC", "OtherSys", "PauseTotalNs",
-		"StackInuse", "StackSys", "Sys", "TotalAlloc",
-	}
-
 	for {
 		select {
 		case <-ctx.Done():
-			// Send final metrics before exiting
-			if len(metrics) > 0 {
-				if err := grpcClient.SendMetrics(context.Background(), metrics); err != nil {
-					log.Printf("Failed to send final metrics: %v", err)
-				}
-			}
+			sendFinalMetrics(grpcClient, metrics)
 			return
 
 		case <-pollTicker.C:
-			// Collect runtime metrics
-			var memStats runtime.MemStats
-			runtime.ReadMemStats(&memStats)
-
-			for _, metricName := range runtimeMetrics {
-				var value float64
-				switch metricName {
-				case "Alloc":
-					value = float64(memStats.Alloc)
-				case "BuckHashSys":
-					value = float64(memStats.BuckHashSys)
-				case "Frees":
-					value = float64(memStats.Frees)
-				case "GCCPUFraction":
-					value = memStats.GCCPUFraction
-				case "GCSys":
-					value = float64(memStats.GCSys)
-				case "HeapAlloc":
-					value = float64(memStats.HeapAlloc)
-				case "HeapIdle":
-					value = float64(memStats.HeapIdle)
-				case "HeapInuse":
-					value = float64(memStats.HeapInuse)
-				case "HeapObjects":
-					value = float64(memStats.HeapObjects)
-				case "HeapReleased":
-					value = float64(memStats.HeapReleased)
-				case "HeapSys":
-					value = float64(memStats.HeapSys)
-				case "LastGC":
-					value = float64(memStats.LastGC)
-				case "Lookups":
-					value = float64(memStats.Lookups)
-				case "MCacheInuse":
-					value = float64(memStats.MCacheInuse)
-				case "MCacheSys":
-					value = float64(memStats.MCacheSys)
-				case "MSpanInuse":
-					value = float64(memStats.MSpanInuse)
-				case "MSpanSys":
-					value = float64(memStats.MSpanSys)
-				case "Mallocs":
-					value = float64(memStats.Mallocs)
-				case "NextGC":
-					value = float64(memStats.NextGC)
-				case "NumForcedGC":
-					value = float64(memStats.NumForcedGC)
-				case "NumGC":
-					value = float64(memStats.NumGC)
-				case "OtherSys":
-					value = float64(memStats.OtherSys)
-				case "PauseTotalNs":
-					value = float64(memStats.PauseTotalNs)
-				case "StackInuse":
-					value = float64(memStats.StackInuse)
-				case "StackSys":
-					value = float64(memStats.StackSys)
-				case "Sys":
-					value = float64(memStats.Sys)
-				case "TotalAlloc":
-					value = float64(memStats.TotalAlloc)
-				}
-
-				metrics = append(metrics, models.Metrics{
-					ID:    metricName,
-					MType: "gauge",
-					Value: &value,
-				})
-			}
-
-			// Add RandomValue
-			randomValue := rand.Float64()
-			metrics = append(metrics, models.Metrics{
-				ID:    "RandomValue",
-				MType: "gauge",
-				Value: &randomValue,
-			})
-
-			// Collect system metrics
-			if memInfo, err := mem.VirtualMemory(); err == nil {
-				totalMem := float64(memInfo.Total)
-				freeMem := float64(memInfo.Free)
-
-				metrics = append(metrics, models.Metrics{
-					ID:    "TotalMemory",
-					MType: "gauge",
-					Value: &totalMem,
-				})
-
-				metrics = append(metrics, models.Metrics{
-					ID:    "FreeMemory",
-					MType: "gauge",
-					Value: &freeMem,
-				})
-			}
-
-			// Collect CPU metrics
-			if cpuPercents, err := cpu.Percent(time.Second, true); err == nil {
-				for i, percent := range cpuPercents {
-					metricName := fmt.Sprintf("CPUutilization%d", i+1)
-					cpuValue := percent
-
-					metrics = append(metrics, models.Metrics{
-						ID:    metricName,
-						MType: "gauge",
-						Value: &cpuValue,
-					})
-				}
-			}
-
-			// Increment poll counter
+			// Collect all metrics
+			metrics = append(metrics, collectRuntimeMetrics()...)
+			metrics = append(metrics, collectSystemMetrics()...)
 			atomic.AddInt64(&pollCounter, 1)
 
 		case <-reportTicker.C:
-			// Add poll counter to metrics
-			currentCount := atomic.LoadInt64(&pollCounter)
-			metrics = append(metrics, models.Metrics{
-				ID:    "PollCount",
-				MType: "counter",
-				Delta: &currentCount,
-			})
+			metrics = appendPollCount(metrics, &pollCounter)
+			sendMetricsBatch(ctx, grpcClient, &metrics)
+		}
+	}
+}
 
-			// Send metrics via gRPC
-			if len(metrics) > 0 {
-				log.Printf("Sending %d metrics via gRPC", len(metrics))
-				if err := grpcClient.SendMetrics(ctx, metrics); err != nil {
-					log.Printf("Failed to send metrics via gRPC: %v", err)
-				}
-				// Clear metrics after sending
-				metrics = metrics[:0]
-			}
+// collectRuntimeMetrics collects Go runtime and random metrics
+func collectRuntimeMetrics() []models.Metrics {
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+
+	metrics := make([]models.Metrics, 0, 28)
+
+	// Collect all runtime metrics using a map for cleaner code
+	metricValues := map[string]float64{
+		"Alloc":         float64(memStats.Alloc),
+		"BuckHashSys":   float64(memStats.BuckHashSys),
+		"Frees":         float64(memStats.Frees),
+		"GCCPUFraction": memStats.GCCPUFraction,
+		"GCSys":         float64(memStats.GCSys),
+		"HeapAlloc":     float64(memStats.HeapAlloc),
+		"HeapIdle":      float64(memStats.HeapIdle),
+		"HeapInuse":     float64(memStats.HeapInuse),
+		"HeapObjects":   float64(memStats.HeapObjects),
+		"HeapReleased":  float64(memStats.HeapReleased),
+		"HeapSys":       float64(memStats.HeapSys),
+		"LastGC":        float64(memStats.LastGC),
+		"Lookups":       float64(memStats.Lookups),
+		"MCacheInuse":   float64(memStats.MCacheInuse),
+		"MCacheSys":     float64(memStats.MCacheSys),
+		"MSpanInuse":    float64(memStats.MSpanInuse),
+		"MSpanSys":      float64(memStats.MSpanSys),
+		"Mallocs":       float64(memStats.Mallocs),
+		"NextGC":        float64(memStats.NextGC),
+		"NumForcedGC":   float64(memStats.NumForcedGC),
+		"NumGC":         float64(memStats.NumGC),
+		"OtherSys":      float64(memStats.OtherSys),
+		"PauseTotalNs":  float64(memStats.PauseTotalNs),
+		"StackInuse":    float64(memStats.StackInuse),
+		"StackSys":      float64(memStats.StackSys),
+		"Sys":           float64(memStats.Sys),
+		"TotalAlloc":    float64(memStats.TotalAlloc),
+	}
+
+	for name, value := range metricValues {
+		v := value
+		metrics = append(metrics, models.Metrics{
+			ID:    name,
+			MType: "gauge",
+			Value: &v,
+		})
+	}
+
+	// Add RandomValue
+	randomValue := rand.Float64()
+	metrics = append(metrics, models.Metrics{
+		ID:    "RandomValue",
+		MType: "gauge",
+		Value: &randomValue,
+	})
+
+	return metrics
+}
+
+// collectSystemMetrics collects memory and CPU metrics
+func collectSystemMetrics() []models.Metrics {
+	metrics := make([]models.Metrics, 0, 10)
+
+	// Collect memory metrics
+	if memInfo, err := mem.VirtualMemory(); err == nil {
+		totalMem := float64(memInfo.Total)
+		freeMem := float64(memInfo.Free)
+
+		metrics = append(metrics, models.Metrics{
+			ID:    "TotalMemory",
+			MType: "gauge",
+			Value: &totalMem,
+		})
+
+		metrics = append(metrics, models.Metrics{
+			ID:    "FreeMemory",
+			MType: "gauge",
+			Value: &freeMem,
+		})
+	}
+
+	// Collect CPU metrics
+	if cpuPercents, err := cpu.Percent(time.Second, true); err == nil {
+		for i, percent := range cpuPercents {
+			cpuValue := percent
+			metrics = append(metrics, models.Metrics{
+				ID:    fmt.Sprintf("CPUutilization%d", i+1),
+				MType: "gauge",
+				Value: &cpuValue,
+			})
+		}
+	}
+
+	return metrics
+}
+
+// appendPollCount adds the poll counter metric to the metrics slice
+func appendPollCount(metrics []models.Metrics, pollCounter *int64) []models.Metrics {
+	currentCount := atomic.LoadInt64(pollCounter)
+	return append(metrics, models.Metrics{
+		ID:    "PollCount",
+		MType: "counter",
+		Delta: &currentCount,
+	})
+}
+
+// sendMetricsBatch sends metrics via gRPC and clears the slice
+func sendMetricsBatch(ctx context.Context, grpcClient *grpcclient.MetricsClient, metrics *[]models.Metrics) {
+	if len(*metrics) > 0 {
+		log.Printf("Sending %d metrics via gRPC", len(*metrics))
+		if err := grpcClient.SendMetrics(ctx, *metrics); err != nil {
+			log.Printf("Failed to send metrics via gRPC: %v", err)
+		}
+		*metrics = (*metrics)[:0]
+	}
+}
+
+// sendFinalMetrics sends remaining metrics before shutdown
+func sendFinalMetrics(grpcClient *grpcclient.MetricsClient, metrics []models.Metrics) {
+	if len(metrics) > 0 {
+		if err := grpcClient.SendMetrics(context.Background(), metrics); err != nil {
+			log.Printf("Failed to send final metrics: %v", err)
 		}
 	}
 }

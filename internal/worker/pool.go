@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"github.com/mutualEvg/metrics-server/internal/hash"
 	"github.com/mutualEvg/metrics-server/internal/models"
 	"github.com/mutualEvg/metrics-server/internal/retry"
+	"github.com/mutualEvg/metrics-server/internal/utils"
 )
 
 // MetricData represents a single metric to be sent
@@ -103,20 +103,6 @@ func (p *Pool) worker(id int) {
 	log.Printf("Worker %d stopped", id)
 }
 
-// getOutboundIP gets the preferred outbound IP address of this machine
-func getOutboundIP() string {
-	// Try to get the outbound IP by connecting to a public DNS server
-	// This doesn't actually send any data, just establishes which interface would be used
-	conn, err := net.Dial("udp", "8.8.8.8:80")
-	if err != nil {
-		return "127.0.0.1" // Fallback to localhost
-	}
-	defer conn.Close()
-
-	localAddr := conn.LocalAddr().(*net.UDPAddr)
-	return localAddr.IP.String()
-}
-
 // sendMetric sends a single metric to the server
 func (p *Pool) sendMetric(metricData MetricData) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -163,7 +149,7 @@ func (p *Pool) sendMetric(metricData MetricData) {
 		req.Header.Set("Accept-Encoding", "gzip")
 
 		// Add X-Real-IP header with the agent's IP address
-		req.Header.Set("X-Real-IP", getOutboundIP())
+		req.Header.Set("X-Real-IP", utils.GetOutboundIP())
 
 		// Add encryption header if data is encrypted
 		if p.publicKey != nil {
