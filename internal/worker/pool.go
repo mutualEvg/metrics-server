@@ -16,6 +16,7 @@ import (
 	"github.com/mutualEvg/metrics-server/internal/hash"
 	"github.com/mutualEvg/metrics-server/internal/models"
 	"github.com/mutualEvg/metrics-server/internal/retry"
+	"github.com/mutualEvg/metrics-server/internal/utils"
 )
 
 // MetricData represents a single metric to be sent
@@ -146,6 +147,9 @@ func (p *Pool) sendMetric(metricData MetricData) {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Content-Encoding", "gzip")
 		req.Header.Set("Accept-Encoding", "gzip")
+
+		// Add X-Real-IP header with the agent's IP address
+		req.Header.Set("X-Real-IP", utils.GetOutboundIP())
 
 		// Add encryption header if data is encrypted
 		if p.publicKey != nil {

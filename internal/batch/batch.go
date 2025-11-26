@@ -15,6 +15,7 @@ import (
 	"github.com/mutualEvg/metrics-server/internal/hash"
 	"github.com/mutualEvg/metrics-server/internal/models"
 	"github.com/mutualEvg/metrics-server/internal/retry"
+	"github.com/mutualEvg/metrics-server/internal/utils"
 )
 
 // Batch holds a collection of metrics to send as batch
@@ -120,6 +121,9 @@ func SendWithEncryption(metrics []models.Metrics, serverAddr, key string, public
 
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Content-Encoding", "gzip")
+
+		// Add X-Real-IP header with the agent's IP address
+		req.Header.Set("X-Real-IP", utils.GetOutboundIP())
 
 		// Add encryption header if data is encrypted
 		if publicKey != nil {

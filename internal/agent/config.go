@@ -30,6 +30,7 @@ type Config struct {
 	Key            string
 	CryptoKey      string // Path to public key file for encryption
 	RetryConfig    retry.RetryConfig
+	GRPCAddress    string // gRPC server address (optional)
 }
 
 // JSONConfig represents the JSON configuration file structure for agent
@@ -38,6 +39,7 @@ type JSONConfig struct {
 	ReportInterval string `json:"report_interval"`
 	PollInterval   string `json:"poll_interval"`
 	CryptoKey      string `json:"crypto_key"`
+	GRPCAddress    string `json:"grpc_address"`
 }
 
 // agentFlags holds all command-line flag values for the agent
@@ -50,6 +52,7 @@ type agentFlags struct {
 	key            *string
 	cryptoKey      *string
 	rateLimit      *int
+	grpcAddress    *string
 	configPath     *string
 	configPathLong *string
 }
@@ -69,6 +72,7 @@ func ParseConfig() *Config {
 		Key:            resolveAgentKey(flags),
 		CryptoKey:      resolveAgentCryptoKey(flags, jsonConfig),
 		RetryConfig:    resolveAgentRetryConfig(flags),
+		GRPCAddress:    resolveAgentGRPCAddress(flags, jsonConfig),
 	}
 
 	logAgentConfig(config)
@@ -86,6 +90,7 @@ func parseAgentFlags() *agentFlags {
 		key:            flag.String("k", "", "Key for SHA256 signature"),
 		cryptoKey:      flag.String("crypto-key", "", "Path to public key file for encryption"),
 		rateLimit:      flag.Int("l", 0, "Rate limit for concurrent requests (default: 10)"),
+		grpcAddress:    flag.String("g", "", "gRPC server address"),
 		configPath:     flag.String("c", "", "Path to JSON configuration file"),
 		configPathLong: flag.String("config", "", "Path to JSON configuration file"),
 	}
@@ -291,12 +296,33 @@ func resolveAgentRetryConfig(flags *agentFlags) retry.RetryConfig {
 	return retry.FastConfig()
 }
 
+// resolveAgentGRPCAddress resolves the gRPC server address
+func resolveAgentGRPCAddress(flags *agentFlags, jsonConfig *JSONConfig) string {
+	if grpcAddr := os.Getenv("GRPC_ADDRESS"); grpcAddr != "" {
+		log.Printf("gRPC enabled: %s", grpcAddr)
+		return grpcAddr
+	}
+	if *flags.grpcAddress != "" {
+		log.Printf("gRPC enabled: %s", *flags.grpcAddress)
+		return *flags.grpcAddress
+	}
+	if jsonConfig != nil && jsonConfig.GRPCAddress != "" {
+		log.Printf("gRPC enabled: %s", jsonConfig.GRPCAddress)
+		return jsonConfig.GRPCAddress
+	}
+	return ""
+}
+
 // logAgentConfig logs the final configuration
 func logAgentConfig(config *Config) {
 	cryptoStatus := "disabled"
 	if config.CryptoKey != "" {
 		cryptoStatus = "enabled"
 	}
-	log.Printf("Agent starting with server=%s, poll=%v, report=%v, batch_size=%d, rate_limit=%d, crypto=%s",
-		config.ServerAddress, config.PollInterval, config.ReportInterval, config.BatchSize, config.RateLimit, cryptoStatus)
+	grpcStatus := "disabled"
+	if config.GRPCAddress != "" {
+		grpcStatus = config.GRPCAddress
+	}
+	log.Printf("Agent starting with server=%s, poll=%v, report=%v, batch_size=%d, rate_limit=%d, crypto=%s, grpc=%s",
+		config.ServerAddress, config.PollInterval, config.ReportInterval, config.BatchSize, config.RateLimit, cryptoStatus, grpcStatus)
 }

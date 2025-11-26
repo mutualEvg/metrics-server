@@ -23,6 +23,8 @@ type Config struct {
 	CryptoKey       string // Path to private key file for decryption
 	AuditFile       string // Path to audit log file (optional)
 	AuditURL        string // URL for remote audit server (optional)
+	TrustedSubnet   string // Trusted subnet in CIDR notation (optional)
+	GRPCAddress     string // gRPC server address (optional)
 }
 
 // JSONConfig represents the JSON configuration file structure for server
@@ -33,6 +35,8 @@ type JSONConfig struct {
 	StoreFile     string `json:"store_file"`
 	DatabaseDSN   string `json:"database_dsn"`
 	CryptoKey     string `json:"crypto_key"`
+	TrustedSubnet string `json:"trusted_subnet"`
+	GRPCAddress   string `json:"grpc_address"`
 }
 
 // configFlags holds all command-line flag values
@@ -47,6 +51,8 @@ type configFlags struct {
 	cryptoKey       *string
 	auditFile       *string
 	auditURL        *string
+	trustedSubnet   *string
+	grpcAddress     *string
 	configPath      *string
 	configPathLong  *string
 }
@@ -79,6 +85,8 @@ func Load() *Config {
 		CryptoKey:       resolveCryptoKey(flags, jsonConfig),
 		AuditFile:       resolveAuditFile(flags),
 		AuditURL:        resolveAuditURL(flags),
+		TrustedSubnet:   resolveTrustedSubnet(flags, jsonConfig),
+		GRPCAddress:     resolveGRPCAddress(flags, jsonConfig),
 	}
 }
 
@@ -95,6 +103,8 @@ func parseFlags() *configFlags {
 		cryptoKey:       flag.String("crypto-key", "", "Path to private key file for decryption"),
 		auditFile:       flag.String("audit-file", "", "Path to audit log file"),
 		auditURL:        flag.String("audit-url", "", "URL for remote audit server"),
+		trustedSubnet:   flag.String("t", "", "Trusted subnet in CIDR notation"),
+		grpcAddress:     flag.String("g", "", "gRPC server address"),
 		configPath:      flag.String("c", "", "Path to JSON configuration file"),
 		configPathLong:  flag.String("config", "", "Path to JSON configuration file"),
 	}
@@ -230,6 +240,26 @@ func resolveAuditFile(flags *configFlags) string {
 // resolveAuditURL resolves the audit URL
 func resolveAuditURL(flags *configFlags) string {
 	return resolveString("AUDIT_URL", *flags.auditURL, "")
+}
+
+// resolveTrustedSubnet resolves the trusted subnet
+func resolveTrustedSubnet(flags *configFlags, jsonConfig *JSONConfig) string {
+	return resolveStringWithJSON("TRUSTED_SUBNET", *flags.trustedSubnet, func() string {
+		if jsonConfig != nil {
+			return jsonConfig.TrustedSubnet
+		}
+		return ""
+	}, "")
+}
+
+// resolveGRPCAddress resolves the gRPC server address
+func resolveGRPCAddress(flags *configFlags, jsonConfig *JSONConfig) string {
+	return resolveStringWithJSON("GRPC_ADDRESS", *flags.grpcAddress, func() string {
+		if jsonConfig != nil {
+			return jsonConfig.GRPCAddress
+		}
+		return ""
+	}, "")
 }
 
 // resolveFileStoragePath resolves the file storage path
