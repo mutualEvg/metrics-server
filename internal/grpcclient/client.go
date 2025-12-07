@@ -1,0 +1,104 @@
+package grpcclient
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
+
+	"github.com/mutualEvg/metrics-server/internal/models"
+	pb "github.com/mutualEvg/metrics-server/internal/proto"
+	"github.com/mutualEvg/metrics-server/internal/utils"
+)
+
+// MetricsClient wraps the gRPC client for sending metrics
+type MetricsClient struct {
+	conn   *grpc.ClientConn
+	client pb.MetricsClient
+	realIP string
+}
+
+// NewMetricsClient creates a new gRPC metrics client
+func NewMetricsClient(address string) (*MetricsClient, error) {
+	conn, err := grpc.NewClient(address,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create gRPC client: %w", err)
+	}
+
+	client := pb.NewMetricsClient(conn)
+
+	// Get outbound IP for x-real-ip metadata
+	realIP := utils.GetOutboundIP()
+	log.Printf("gRPC client initialized with IP: %s", realIP)
+
+	return &MetricsClient{
+		conn:   conn,
+		client: client,
+		realIP: realIP,
+	}, nil
+}
+
+// Close closes the gRPC connection
+func (c *MetricsClient) Close() error {
+	if c.conn != nil {
+		return c.conn.Close()
+	}
+	return nil
+}
+
+// SendMetrics sends a batch of metrics to the gRPC server
+func (c *MetricsClient) SendMetrics(ctx context.Context, metrics []models.Metrics) error {
+	if len(metrics) == 0 {
+		return nil
+	}
+
+	// Convert internal metrics to protobuf metrics
+	pbMetrics := make([]*pb.Metric, 0, len(metrics))
+	for _, m := range metrics {
+		pbMetric := &pb.Metric{
+			Id: m.ID,
+		}
+
+		if m.MType == "gauge" && m.Value != nil {
+			pbMetric.Type = pb.Metric_GAUGE
+			pbMetric.Value = *m.Value
+		} else if m.MType == "counter" && m.Delta != nil {
+			pbMetric.Type = pb.Metric_COUNTER
+			pbMetric.Delta = *m.Delta
+		} else {
+			log.Printf("Skipping metric %s with invalid type or value", m.ID)
+			continue
+		}
+
+		pbMetrics = append(pbMetrics, pbMetric)
+	}
+
+	// Create request
+	req := &pb.UpdateMetricsRequest{
+		Metrics: pbMetrics,
+	}
+
+	// Add x-real-ip to metadata
+	md := metadata.New(map[string]string{
+		"x-real-ip": c.realIP,
+	})
+	ctx = metadata.NewOutgoingContext(ctx, md)
+
+	// Send request with timeout
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	_, err := c.client.UpdateMetrics(ctx, req)
+	if err != nil {
+		return fmt.Errorf("failed to send metrics via gRPC: %w", err)
+	}
+
+	log.Printf("Successfully sent %d metrics via gRPC", len(pbMetrics))
+	return nil
+}

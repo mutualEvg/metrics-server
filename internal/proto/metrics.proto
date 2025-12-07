@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package metrics;
+
+// Adjust go_package according to your project structure
+option go_package = "github.com/mutualEvg/metrics-server/internal/proto";
+
+// Metric defines a single metric
+message Metric {
+  string id = 1; // metric name
+
+  // MType defines the metric type
+  enum MType {
+    GAUGE = 0;
+    COUNTER = 1;
+  }
+
+  MType type = 2; // metric type
+  // delta field for counter metrics
+  int64 delta = 3;
+  // value field for gauge metrics
+  double value = 4;
+}
+
+// UpdateMetricsRequest contains a list of metrics to update
+message UpdateMetricsRequest {
+  repeated Metric metrics = 1;
+}
+
+// UpdateMetricsResponse is an empty response confirming successful update
+message UpdateMetricsResponse {}
+
+// MetricsService defines the service for working with metrics
+service Metrics {
+  // UpdateMetrics updates metrics on the server
+  // This method is suitable for sending both single metrics and batches
+  rpc UpdateMetrics(UpdateMetricsRequest) returns (UpdateMetricsResponse);
+}
+

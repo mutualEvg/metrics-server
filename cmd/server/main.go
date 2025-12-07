@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,11 +18,14 @@ import (
 	"github.com/mutualEvg/metrics-server/config"
 	"github.com/mutualEvg/metrics-server/internal/audit"
 	"github.com/mutualEvg/metrics-server/internal/crypto"
+	"github.com/mutualEvg/metrics-server/internal/grpcserver"
 	"github.com/mutualEvg/metrics-server/internal/handlers"
 	gzipmw "github.com/mutualEvg/metrics-server/internal/middleware"
+	pb "github.com/mutualEvg/metrics-server/internal/proto"
 	"github.com/mutualEvg/metrics-server/storage"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"google.golang.org/grpc"
 )
 
 var (
@@ -133,6 +137,14 @@ func main() {
 	// Add middleware
 	r.Use(loggingMiddleware)
 
+	// Add trusted subnet middleware if configured
+	if cfg.TrustedSubnet != "" {
+		r.Use(gzipmw.TrustedSubnetMiddleware(cfg.TrustedSubnet))
+		log.Info().Str("trusted_subnet", cfg.TrustedSubnet).Msg("Trusted subnet validation enabled")
+	} else {
+		log.Info().Msg("Trusted subnet validation disabled (all IPs allowed)")
+	}
+
 	// Add decryption middleware if crypto key is configured
 	if cfg.CryptoKey != "" {
 		privateKey, err := loadPrivateKey(cfg.CryptoKey)
@@ -178,13 +190,47 @@ func main() {
 		Handler: r,
 	}
 
-	// Start server in a goroutine
+	// Start HTTP server in a goroutine
 	go func() {
-		fmt.Printf("Server running at %s\n", cfg.ServerAddress)
+		fmt.Printf("HTTP server running at %s\n", cfg.ServerAddress)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatal().Err(err).Msg("Server failed")
+			log.Fatal().Err(err).Msg("HTTP server failed")
 		}
 	}()
+
+	// Start gRPC server if configured
+	var grpcServer *grpc.Server
+	var grpcListener net.Listener
+	if cfg.GRPCAddress != "" {
+		log.Info().Str("address", cfg.GRPCAddress).Msg("Starting gRPC server")
+
+		// Create listener
+		grpcListener, err = net.Listen("tcp", cfg.GRPCAddress)
+		if err != nil {
+			log.Fatal().Err(err).Msg("Failed to create gRPC listener")
+		}
+
+		// Create gRPC server with interceptor
+		var opts []grpc.ServerOption
+		if cfg.TrustedSubnet != "" {
+			opts = append(opts, grpc.UnaryInterceptor(grpcserver.TrustedSubnetInterceptor(cfg.TrustedSubnet)))
+		}
+		grpcServer = grpc.NewServer(opts...)
+
+		// Register metrics service
+		metricsServer := grpcserver.NewMetricsServer(mainStorage)
+		pb.RegisterMetricsServer(grpcServer, metricsServer)
+
+		// Start gRPC server in a goroutine
+		go func() {
+			fmt.Printf("gRPC server running at %s\n", cfg.GRPCAddress)
+			if err := grpcServer.Serve(grpcListener); err != nil {
+				log.Error().Err(err).Msg("gRPC server failed")
+			}
+		}()
+	} else {
+		log.Info().Msg("gRPC server disabled (no grpc_address configured)")
+	}
 
 	// Wait for shutdown signal
 	sig := <-sigChan
@@ -193,6 +239,16 @@ func main() {
 	// Create context with timeout for graceful shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
+	// Shutdown gRPC server gracefully if running
+	if grpcServer != nil {
+		log.Info().Msg("Shutting down gRPC server...")
+		grpcServer.GracefulStop()
+		if grpcListener != nil {
+			grpcListener.Close()
+		}
+		log.Info().Msg("gRPC server stopped gracefully")
+	}
 
 	// Shutdown HTTP server gracefully (waits for in-flight requests to complete)
 	log.Info().Msg("Shutting down HTTP server...")
